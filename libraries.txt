@@ -1,0 +1,6 @@
+# Wokwi Library List
+# See https://docs.wokwi.com/guides/libraries
+
+GxEPD
+NTPClient
+U8g2_for_Adafruit_GFX
