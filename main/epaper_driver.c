@@ -22,7 +22,7 @@
 #define EPD_CMD_TEMPERATURE_SENSOR_CONTROL 0x18
 
 #define EPD_BUSY_LEVEL 1
-#define EPD_BUSY_TIMEOUT_MS 5000
+#define EPD_BUSY_TIMEOUT_MS 20000
 #define EPD_ENTRY_MODE_XY_INCREMENT 0x03
 #define EPD_POWER_ON_SEQUENCE 0xC0
 #define EPD_POWER_OFF_SEQUENCE 0x83
@@ -168,14 +168,23 @@ void epaper_driver_wait_busy(void)
 
 void epaper_driver_write_framebuffer(const uint8_t *buffer, size_t length)
 {
+    epaper_driver_write_framebuffers(buffer, NULL, length);
+}
+
+void epaper_driver_write_framebuffers(const uint8_t *black_buffer, const uint8_t *red_buffer, size_t length)
+{
     /*
      * 对齐 GxEPD::update()：每次全刷前重新初始化显示、上电，再写黑白 RAM 和第二 RAM。
-     * 三色屏的 0x26 是红色平面，这里写 0x00 表示不使用红色，避免仿真停在红底。
+     * 三色屏的 0x26 是红色平面；没有红色内容时写 0x00，避免仿真停在红底。
      */
     epaper_driver_init_display();
     epaper_driver_power_on();
-    epaper_driver_write_ram(EPD_CMD_WRITE_RAM_BW, buffer, length);
-    epaper_driver_write_ram_filled(EPD_CMD_WRITE_RAM_COLOR, 0x00, length);
+    epaper_driver_write_ram(EPD_CMD_WRITE_RAM_BW, black_buffer, length);
+    if (red_buffer != NULL) {
+        epaper_driver_write_ram(EPD_CMD_WRITE_RAM_COLOR, red_buffer, length);
+    } else {
+        epaper_driver_write_ram_filled(EPD_CMD_WRITE_RAM_COLOR, 0x00, length);
+    }
 }
 
 void epaper_driver_refresh(void)

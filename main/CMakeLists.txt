@@ -6,6 +6,7 @@ idf_component_register(
         "epaper_bus.c"
         "epaper_driver.c"
         "epaper_graphics.c"
+        "display_surface.c"
         "display_pages.c"
         "xmu_logo.c"
     INCLUDE_DIRS "."

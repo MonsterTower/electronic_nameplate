@@ -16,6 +16,7 @@ void epaper_driver_write_command(uint8_t command);
 void epaper_driver_write_data(uint8_t data);
 void epaper_driver_wait_busy(void);
 void epaper_driver_write_framebuffer(const uint8_t *buffer, size_t length);
+void epaper_driver_write_framebuffers(const uint8_t *black_buffer, const uint8_t *red_buffer, size_t length);
 void epaper_driver_refresh(void);
 void epaper_driver_sleep(void);
 

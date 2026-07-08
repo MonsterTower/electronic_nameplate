@@ -2,7 +2,8 @@
 
 #include <string.h>
 
-static uint8_t s_framebuffer[EPAPER_FRAMEBUFFER_SIZE];
+static uint8_t s_black_buffer[EPAPER_FRAMEBUFFER_SIZE];
+static uint8_t s_red_buffer[EPAPER_FRAMEBUFFER_SIZE];
 
 static uint16_t image2lcd_read_le16(const unsigned char *data)
 {
@@ -19,10 +20,16 @@ void epaper_graphics_init(void)
 void epaper_graphics_clear(bool white)
 {
     /* 墨水屏黑白显存约定：1 是白色，0 是黑色。 */
-    memset(s_framebuffer, white ? 0xFF : 0x00, sizeof(s_framebuffer));
+    memset(s_black_buffer, white ? 0xFF : 0x00, sizeof(s_black_buffer));
+    memset(s_red_buffer, 0x00, sizeof(s_red_buffer));
 }
 
 void epaper_graphics_draw_pixel(int x, int y, bool black)
+{
+    epaper_graphics_draw_pixel_color(x, y, black ? EPAPER_GRAPHICS_BLACK : EPAPER_GRAPHICS_WHITE);
+}
+
+void epaper_graphics_draw_pixel_color(int x, int y, epaper_graphics_color_t color)
 {
     if (x < 0 || x >= EPAPER_LOGICAL_WIDTH || y < 0 || y >= EPAPER_LOGICAL_HEIGHT) {
         return;
@@ -37,10 +44,20 @@ void epaper_graphics_draw_pixel(int x, int y, bool black)
     const size_t index = (size_t)memory_y * EPAPER_MEMORY_BYTES_PER_ROW + (size_t)(memory_x / 8);
     const uint8_t mask = (uint8_t)(0x80U >> (memory_x % 8));
 
-    if (black) {
-        s_framebuffer[index] &= (uint8_t)~mask;
-    } else {
-        s_framebuffer[index] |= mask;
+    switch (color) {
+    case EPAPER_GRAPHICS_BLACK:
+        s_black_buffer[index] &= (uint8_t)~mask;
+        s_red_buffer[index] &= (uint8_t)~mask;
+        break;
+    case EPAPER_GRAPHICS_RED:
+        s_black_buffer[index] |= mask;
+        s_red_buffer[index] |= mask;
+        break;
+    case EPAPER_GRAPHICS_WHITE:
+    default:
+        s_black_buffer[index] |= mask;
+        s_red_buffer[index] &= (uint8_t)~mask;
+        break;
     }
 }
 
@@ -81,6 +98,6 @@ bool epaper_graphics_draw_image2lcd_centered(const unsigned char *image, size_t 
 
 void epaper_graphics_display(void)
 {
-    epaper_driver_write_framebuffer(s_framebuffer, sizeof(s_framebuffer));
+    epaper_driver_write_framebuffers(s_black_buffer, s_red_buffer, sizeof(s_black_buffer));
     epaper_driver_refresh();
 }
