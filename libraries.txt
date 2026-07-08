@@ -2,5 +2,7 @@
 # See https://docs.wokwi.com/guides/libraries
 
 GxEPD
+GxEPD2
+Adafruit GFX Library
 NTPClient
 U8g2_for_Adafruit_GFX

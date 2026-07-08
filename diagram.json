@@ -57,7 +57,8 @@
       "top": 44.4,
       "left": 378.2,
       "attrs": { "color": "orange" }
-    }
+    },
+    { "type": "board-epaper-2in9", "id": "epd1", "top": -268.2, "left": 100.08, "attrs": {} }
   ],
   "connections": [
     [ "esp:TX", "$serialMonitor:RX", "", [] ],
@@ -76,6 +77,12 @@
     [ "bb1:tn.2", "bb1:3t.a", "green", [ "v0" ] ],
     [ "bb1:tn.5", "bb1:6t.a", "green", [ "v0" ] ],
     [ "bb1:tn.7", "bb1:9t.a", "green", [ "v0" ] ],
+    [ "esp:3V3.1", "pot1:VCC", "green", [ "v0" ] ],
+    [ "pot1:SIG", "esp:1", "green", [ "h0", "v114.4" ] ],
+    [ "bb1:tn.11", "bb1:14t.a", "green", [ "v0" ] ],
+    [ "esp:2", "bb1:15t.a", "green", [ "h42.97", "v-38.58", "h268.8" ] ],
+    [ "led1:A", "bb1:4t.e", "", [ "$bb" ] ],
+    [ "led1:C", "bb1:3t.e", "", [ "$bb" ] ],
     [ "led2:A", "bb1:7t.e", "", [ "$bb" ] ],
     [ "led2:C", "bb1:6t.e", "", [ "$bb" ] ],
     [ "led3:A", "bb1:10t.e", "", [ "$bb" ] ],
@@ -92,14 +99,16 @@
     [ "btn3:2.l", "bb1:9b.g", "", [ "$bb" ] ],
     [ "btn3:1.r", "bb1:11b.j", "", [ "$bb" ] ],
     [ "btn3:2.r", "bb1:9b.j", "", [ "$bb" ] ],
-    [ "led1:A", "bb1:4t.e", "", [ "$bb" ] ],
-    [ "led1:C", "bb1:3t.e", "", [ "$bb" ] ],
-    [ "esp:3V3.1", "pot1:VCC", "green", [ "v0" ] ],
-    [ "pot1:SIG", "esp:1", "green", [ "h0", "v114.4" ] ],
-    [ "bb1:tn.11", "bb1:14t.a", "green", [ "v0" ] ],
-    [ "esp:2", "bb1:15t.a", "green", [ "h42.97", "v-38.58", "h268.8" ] ],
     [ "led4:A", "bb1:15t.e", "", [ "$bb" ] ],
-    [ "led4:C", "bb1:14t.e", "", [ "$bb" ] ]
+    [ "led4:C", "bb1:14t.e", "", [ "$bb" ] ],
+    [ "epd1:RST", "esp:8", "green", [ "h-153.6", "v384" ] ],
+    [ "epd1:DC", "esp:3", "green", [ "h-163.2", "v384" ] ],
+    [ "epd1:CS", "esp:9", "green", [ "h-172.8", "v364.8" ] ],
+    [ "epd1:CLK", "esp:17", "green", [ "h-134.4", "v307.13" ] ],
+    [ "epd1:BUSY", "esp:10", "green", [ "h-182.4", "v9.6" ] ],
+    [ "epd1:DIN", "esp:18", "green", [ "h-144", "v307.13", "h9.6" ] ],
+    [ "epd1:VCC", "esp:3V3.1", "red", [ "h-124.8", "v201.53" ] ],
+    [ "epd1:GND", "esp:GND.2", "black", [ "h0" ] ]
   ],
   "dependencies": {}
 }
