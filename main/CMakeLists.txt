@@ -1,8 +1,10 @@
 idf_component_register(
     SRCS
         "main.c"
+        "app_model.c"
         "input_panel.c"
         "battery_monitor.c"
+        "font_zh16.c"
         "epaper_bus.c"
         "epaper_driver.c"
         "epaper_graphics.c"

@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "epaper_graphics.h"
+#include "font_zh16.h"
 
 static epaper_graphics_color_t display_surface_to_epaper_color(display_color_t color)
 {
@@ -98,6 +99,95 @@ static void display_surface_draw_char(int x, int y, char ch, display_color_t col
     }
 }
 
+static int display_surface_ascii_advance(int scale)
+{
+    return 6 * scale;
+}
+
+static int display_surface_zh_advance(int scale)
+{
+    return (FONT_ZH16_WIDTH + 1) * scale;
+}
+
+static int display_surface_utf8_line_height(int scale)
+{
+    return (FONT_ZH16_HEIGHT + 2) * scale;
+}
+
+static const char *display_surface_next_codepoint(const char *text, uint32_t *codepoint)
+{
+    const uint8_t *bytes = (const uint8_t *)text;
+
+    if (bytes[0] < 0x80) {
+        *codepoint = bytes[0];
+        return text + 1;
+    }
+
+    if ((bytes[0] & 0xE0) == 0xC0 &&
+        bytes[1] != '\0' &&
+        (bytes[1] & 0xC0) == 0x80) {
+        *codepoint = ((uint32_t)(bytes[0] & 0x1F) << 6) |
+                     (uint32_t)(bytes[1] & 0x3F);
+        return text + 2;
+    }
+
+    if ((bytes[0] & 0xF0) == 0xE0 &&
+        bytes[1] != '\0' &&
+        bytes[2] != '\0' &&
+        (bytes[1] & 0xC0) == 0x80 &&
+        (bytes[2] & 0xC0) == 0x80) {
+        *codepoint = ((uint32_t)(bytes[0] & 0x0F) << 12) |
+                     ((uint32_t)(bytes[1] & 0x3F) << 6) |
+                     (uint32_t)(bytes[2] & 0x3F);
+        return text + 3;
+    }
+
+    // 遇到非法 UTF-8 时只跳过当前字节，避免整行显示被一个坏字符拖住。
+    *codepoint = '?';
+    return text + 1;
+}
+
+static int display_surface_codepoint_width(uint32_t codepoint, int scale)
+{
+    if (codepoint == '\0') {
+        return 0;
+    }
+    if (codepoint < 0x80) {
+        return display_surface_ascii_advance(scale);
+    }
+
+    return display_surface_zh_advance(scale);
+}
+
+static void display_surface_draw_zh16(int x, int y, uint32_t codepoint, display_color_t color, int scale)
+{
+    const uint16_t *rows = NULL;
+
+    if (!font_zh16_get_glyph(codepoint, &rows)) {
+        rows = font_zh16_get_missing_glyph();
+    }
+
+    for (int row = 0; row < FONT_ZH16_HEIGHT; ++row) {
+        const uint16_t bits = rows[row];
+        for (int col = 0; col < FONT_ZH16_WIDTH; ++col) {
+            if ((bits & (1U << (FONT_ZH16_WIDTH - 1 - col))) == 0) {
+                continue;
+            }
+            display_surface_fill_rect(x + col * scale, y + row * scale, scale, scale, color);
+        }
+    }
+}
+
+static void display_surface_draw_codepoint(int x, int y, uint32_t codepoint, display_color_t color, int scale)
+{
+    if (codepoint < 0x80) {
+        display_surface_draw_char(x, y, (char)codepoint, color, scale);
+        return;
+    }
+
+    display_surface_draw_zh16(x, y, codepoint, color, scale);
+}
+
 void display_surface_init(void)
 {
     epaper_graphics_init();
@@ -178,6 +268,75 @@ void display_surface_draw_text(int x, int y, const char *text, display_color_t c
     const int char_step = 6 * scale;
     for (size_t i = 0; text[i] != '\0'; ++i) {
         display_surface_draw_char(x + (int)i * char_step, y, text[i], color, scale);
+    }
+}
+
+void display_surface_draw_utf8_text(int x, int y, const char *text, display_color_t color, int scale)
+{
+    int cursor_x = x;
+
+    if (text == NULL) {
+        return;
+    }
+    if (scale < 1) {
+        scale = 1;
+    }
+
+    while (*text != '\0') {
+        uint32_t codepoint = 0;
+        text = display_surface_next_codepoint(text, &codepoint);
+        if (codepoint == '\n') {
+            cursor_x = x;
+            y += display_surface_utf8_line_height(scale);
+            continue;
+        }
+
+        display_surface_draw_codepoint(cursor_x, y, codepoint, color, scale);
+        cursor_x += display_surface_codepoint_width(codepoint, scale);
+    }
+}
+
+void display_surface_draw_utf8_text_box(int x, int y, int width, int height,
+                                        const char *text, display_color_t color, int scale)
+{
+    const int right = x + width;
+    const int bottom = y + height;
+    int line_height;
+    int cursor_x = x;
+    int cursor_y = y;
+
+    if (text == NULL || width <= 0 || height <= 0) {
+        return;
+    }
+    if (scale < 1) {
+        scale = 1;
+    }
+    line_height = display_surface_utf8_line_height(scale);
+
+    while (*text != '\0') {
+        uint32_t codepoint = 0;
+        text = display_surface_next_codepoint(text, &codepoint);
+
+        if (codepoint == '\n') {
+            cursor_x = x;
+            cursor_y += line_height;
+            if (cursor_y + line_height > bottom) {
+                return;
+            }
+            continue;
+        }
+
+        const int glyph_width = display_surface_codepoint_width(codepoint, scale);
+        if (cursor_x != x && cursor_x + glyph_width > right) {
+            cursor_x = x;
+            cursor_y += line_height;
+        }
+        if (cursor_y + line_height > bottom) {
+            return;
+        }
+
+        display_surface_draw_codepoint(cursor_x, cursor_y, codepoint, color, scale);
+        cursor_x += glyph_width;
     }
 }
 
