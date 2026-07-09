@@ -8,6 +8,16 @@ idf_component_register(
         "epaper_graphics.c"
         "display_surface.c"
         "display_pages.c"
+        "network_service.c"
         "xmu_logo.c"
     INCLUDE_DIRS "."
+    REQUIRES
+        esp_driver_gpio
+        esp_driver_spi
+        esp_adc
+        esp_wifi
+        esp_netif
+        esp_event
+        lwip
+        nvs_flash
 )

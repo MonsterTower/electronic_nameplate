@@ -3,6 +3,7 @@
 #include "battery_monitor.h"
 #include "display_pages.h"
 #include "input_panel.h"
+#include "network_service.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -12,6 +13,7 @@ void app_main(void)
 
     input_panel_init();
     battery_monitor_init();
+    network_service_init();
     display_pages_init();
     display_pages_show_state(0);
 
