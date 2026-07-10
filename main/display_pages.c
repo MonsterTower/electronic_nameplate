@@ -148,7 +148,7 @@ static void display_pages_show_courses(const app_model_t *model)
     draw_page_shell("电子课程表", model, true);
 
     if (model->course_count == 0) {
-        display_surface_draw_utf8_text(16, 56, "今日无课程", DISPLAY_COLOR_BLACK, 1);
+        display_surface_draw_utf8_text(16, 56, "无课", DISPLAY_COLOR_BLACK, 1);
         display_surface_refresh();
         return;
     }

@@ -13,6 +13,7 @@
 #include "network_service.h"
 #include "power_manager.h"
 #include "schedule_service.h"
+#include "weather_service.h"
 
 /* 工作周期开始时的模型快照，放入静态存储避免挤占 main 任务栈。 */
 static app_model_t s_model_before_work;
@@ -119,8 +120,10 @@ static void app_run_work_cycle(void)
         if (network_success) {
             network_service_data_t network = {0};
             network_service_get_snapshot(&network);
-            if (!schedule_service_refresh(&model, &network.local_time)) {
-                // 课表下载失败也按网络失败处理，缩短下一次重试的等待时间。
+            const bool schedule_success = schedule_service_refresh(&model, &network.local_time);
+            const bool weather_success = weather_service_refresh(&model);
+            if (!schedule_success || !weather_success) {
+                // 内容下载失败时保留缓存，并按网络失败处理以便稍后重试。
                 network_success = false;
             }
         }

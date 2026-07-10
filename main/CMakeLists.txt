@@ -7,6 +7,7 @@ idf_component_register(
         "battery_monitor.c"
         "power_manager.c"
         "schedule_service.c"
+        "weather_service.c"
         "font_zh16.c"
         "epaper_bus.c"
         "epaper_driver.c"
