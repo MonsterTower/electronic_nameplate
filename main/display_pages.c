@@ -1,6 +1,7 @@
 #include "display_pages.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "display_surface.h"
 
@@ -51,6 +52,41 @@ static void draw_label_value(int x, int y, const char *label, const char *value,
                                        safe_text(value), DISPLAY_COLOR_BLACK, 1);
 }
 
+static void copy_utf8_prefix(char *dst, size_t dst_size, const char *src, size_t max_characters)
+{
+    size_t dst_length = 0;
+    size_t character_count = 0;
+
+    if (dst_size == 0) {
+        return;
+    }
+    dst[0] = '\0';
+    if (src == NULL) {
+        return;
+    }
+
+    while (*src != '\0' && character_count < max_characters) {
+        const unsigned char first = (unsigned char)*src;
+        size_t sequence_length = 1;
+        if ((first & 0xF0U) == 0xF0U) {
+            sequence_length = 4;
+        } else if ((first & 0xE0U) == 0xE0U) {
+            sequence_length = 3;
+        } else if ((first & 0xC0U) == 0xC0U) {
+            sequence_length = 2;
+        }
+        if (dst_length + sequence_length >= dst_size) {
+            break;
+        }
+
+        memcpy(&dst[dst_length], src, sequence_length);
+        dst_length += sequence_length;
+        src += sequence_length;
+        ++character_count;
+    }
+    dst[dst_length] = '\0';
+}
+
 static void display_pages_show_nameplate(const app_model_t *model)
 {
     draw_page_shell("电子桌牌", model, false);
@@ -92,6 +128,7 @@ static void display_pages_show_calendar(const app_model_t *model)
 static void draw_course_row(int y, const app_course_info_t *course)
 {
     char time_range[APP_MODEL_COURSE_TIME_LEN * 2 + 2] = {0};
+    char course_name[7] = {0};
     const display_color_t color = course->is_next ? DISPLAY_COLOR_WHITE : DISPLAY_COLOR_BLACK;
 
     if (course->is_next) {
@@ -99,9 +136,11 @@ static void draw_course_row(int y, const app_course_info_t *course)
     }
 
     snprintf(time_range, sizeof(time_range), "%s-%s", course->start, course->end);
-    display_surface_draw_utf8_text_box(12, y, 92, 18, course->name, color, 1);
-    display_surface_draw_text(110, y + 4, time_range, color, 1);
-    display_surface_draw_utf8_text_box(178, y, 110, 18, course->room, color, 1);
+    // 数据模型保留课程全名；当前紧凑课表页只显示前两个 UTF-8 字符。
+    copy_utf8_prefix(course_name, sizeof(course_name), course->name, 2);
+    display_surface_draw_utf8_text_box(12, y, 34, 18, course_name, color, 1);
+    display_surface_draw_text(54, y + 4, time_range, color, 1);
+    display_surface_draw_utf8_text_box(126, y, 162, 18, course->room, color, 1);
 }
 
 static void display_pages_show_courses(const app_model_t *model)

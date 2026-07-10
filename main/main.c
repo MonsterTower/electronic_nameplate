@@ -12,6 +12,10 @@
 #include "input_panel.h"
 #include "network_service.h"
 #include "power_manager.h"
+#include "schedule_service.h"
+
+/* 工作周期开始时的模型快照，放入静态存储避免挤占 main 任务栈。 */
+static app_model_t s_model_before_work;
 
 static bool text_changed(const char *before, const char *after)
 {
@@ -30,7 +34,9 @@ static bool app_model_display_changed(const app_model_t *before, const app_model
            text_changed(before->battery.voltage_text, after->battery.voltage_text) ||
            text_changed(before->battery.percent_text, after->battery.percent_text) ||
            text_changed(before->network.wifi_text, after->network.wifi_text) ||
-           text_changed(before->network.ntp_text, after->network.ntp_text);
+           text_changed(before->network.ntp_text, after->network.ntp_text) ||
+           before->course_count != after->course_count ||
+           memcmp(before->courses, after->courses, sizeof(before->courses)) != 0;
 }
 
 static void display_current_page(int page, const app_model_t *model, bool *display_initialized)
@@ -89,7 +95,7 @@ static void app_run_work_cycle(void)
     if (storage_err == ESP_OK) {
         (void)app_storage_load(&saved_page, &model);
     }
-    const app_model_t model_before_work = model;
+    s_model_before_work = model;
 
     input_panel_init();
     input_panel_set_state(saved_page);
@@ -110,6 +116,14 @@ static void app_run_work_cycle(void)
     if (plan.should_connect_network) {
         network_attempted = true;
         network_success = network_service_update_once();
+        if (network_success) {
+            network_service_data_t network = {0};
+            network_service_get_snapshot(&network);
+            if (!schedule_service_refresh(&model, &network.local_time)) {
+                // 课表下载失败也按网络失败处理，缩短下一次重试的等待时间。
+                network_success = false;
+            }
+        }
         network_service_shutdown();
         app_model_update_runtime(&model);
     }
@@ -124,7 +138,7 @@ static void app_run_work_cycle(void)
         }
         display_pages_show_low_battery(&model);
     } else if (wake_reason == POWER_WAKE_COLD_START ||
-               app_model_display_changed(&model_before_work, &model)) {
+               app_model_display_changed(&s_model_before_work, &model)) {
         display_current_page(saved_page, &model, &display_initialized);
     }
 

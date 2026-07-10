@@ -13,7 +13,7 @@
 #define APP_MODEL_WEEKDAY_LEN 8
 #define APP_MODEL_WEATHER_LEN 24
 #define APP_MODEL_SCHEDULE_LEN 48
-#define APP_MODEL_COURSE_NAME_LEN 32
+#define APP_MODEL_COURSE_NAME_LEN 48
 #define APP_MODEL_COURSE_TIME_LEN 6
 #define APP_MODEL_COURSE_ROOM_LEN 32
 #define APP_MODEL_IP_LEN 16
@@ -68,6 +68,7 @@ typedef struct {
     app_calendar_info_t calendar;
     app_course_info_t courses[APP_MODEL_COURSE_COUNT];
     uint8_t course_count;
+    bool course_data_valid;
     app_battery_info_t battery;
     app_network_info_t network;
     char firmware_version[APP_MODEL_VERSION_LEN];

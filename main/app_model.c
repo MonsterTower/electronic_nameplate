@@ -94,15 +94,15 @@ void app_model_init(app_model_t *model)
     memset(model, 0, sizeof(*model));
 
     // 默认数据先服务仿真验收；后续 Wi-Fi/JSON 接入后，只更新模型，不直接操作页面。
-    copy_text(model->nameplate.name, sizeof(model->nameplate.name), "张三");
+    copy_text(model->nameplate.name, sizeof(model->nameplate.name), "郑锦泽");
     copy_text(model->nameplate.org, sizeof(model->nameplate.org), "厦门大学");
-    copy_text(model->nameplate.topic, sizeof(model->nameplate.topic), "电子设计与工艺实训");
+    copy_text(model->nameplate.topic, sizeof(model->nameplate.topic), "电子实训");
     copy_text(model->nameplate.qr_text, sizeof(model->nameplate.qr_text), "https://xmu.edu.cn");
 
     copy_text(model->calendar.date, sizeof(model->calendar.date), "2026-07-09");
     copy_text(model->calendar.time, sizeof(model->calendar.time), "时间未校准");
     copy_text(model->calendar.weekday, sizeof(model->calendar.weekday), "周四");
-    copy_text(model->calendar.weather, sizeof(model->calendar.weather), "厦门 多云");
+    copy_text(model->calendar.weather, sizeof(model->calendar.weather), "假厦门 多云");
     copy_text(model->calendar.schedule, sizeof(model->calendar.schedule), "今日 10:10 传感器应用");
     model->calendar.time_synced = false;
 
@@ -122,6 +122,7 @@ void app_model_init(app_model_t *model)
     copy_text(model->firmware_version, sizeof(model->firmware_version), "v0.1");
 
     app_model_set_default_courses(model);
+    model->course_data_valid = false;
 }
 
 void app_model_update_runtime(app_model_t *model)
