@@ -138,6 +138,19 @@ static void display_pages_show_status(const app_model_t *model)
     display_surface_refresh();
 }
 
+void display_pages_show_low_battery(const app_model_t *model)
+{
+    display_surface_clear(DISPLAY_COLOR_WHITE);
+    display_surface_draw_rect(3, 3, DISPLAY_SURFACE_WIDTH - 6, DISPLAY_SURFACE_HEIGHT - 6,
+                              DISPLAY_COLOR_BLACK);
+    display_surface_draw_text(43, 32, "LOW BATTERY", DISPLAY_COLOR_BLACK, 2);
+    display_surface_draw_utf8_text(112, 76, "电量", DISPLAY_COLOR_BLACK, 2);
+    if (model != NULL) {
+        display_surface_draw_text(104, 106, model->battery.voltage_text, DISPLAY_COLOR_BLACK, 1);
+    }
+    display_surface_refresh();
+}
+
 void display_pages_init(void)
 {
     display_surface_init();
@@ -169,4 +182,9 @@ void display_pages_show_state(int state, const app_model_t *model)
         display_pages_show_nameplate(model);
         break;
     }
+}
+
+void display_pages_sleep(void)
+{
+    display_surface_sleep();
 }

@@ -2,8 +2,10 @@ idf_component_register(
     SRCS
         "main.c"
         "app_model.c"
+        "app_storage.c"
         "input_panel.c"
         "battery_monitor.c"
+        "power_manager.c"
         "font_zh16.c"
         "epaper_bus.c"
         "epaper_driver.c"
@@ -22,4 +24,6 @@ idf_component_register(
         esp_event
         lwip
         nvs_flash
+        esp_timer
+        esp_hw_support
 )

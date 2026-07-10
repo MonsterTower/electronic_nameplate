@@ -159,10 +159,13 @@ void app_model_update_runtime(app_model_t *model)
         copy_text(model->calendar.time, sizeof(model->calendar.time), network.time_text);
         copy_text(model->calendar.weekday, sizeof(model->calendar.weekday), weekday_to_cn(network.weekday_text));
         model->calendar.time_synced = true;
-    } else {
-        // NTP 未同步时不显示伪造日期，只保留明确的未校准状态。
+    } else if (!model->calendar.time_synced) {
+        // 首次上电且没有有效缓存时，不显示伪造日期。
         copy_text(model->calendar.date, sizeof(model->calendar.date), "--");
         copy_text(model->calendar.time, sizeof(model->calendar.time), "时间未校准");
         model->calendar.time_synced = false;
+    } else {
+        // 本轮网络失败时保留睡眠前缓存的有效日历数据，而不是清空页面。
+        copy_text(model->network.ntp_text, sizeof(model->network.ntp_text), "使用缓存");
     }
 }

@@ -22,14 +22,10 @@
 #define NETWORK_CONNECT_TIMEOUT_MS 10000
 #define NETWORK_CONNECT_PROGRESS_MS 500
 #define NETWORK_RETRY_INTERVAL_MS 10000
-#define NETWORK_ONLINE_POLL_MS 1000
-#define NETWORK_TIME_REFRESH_INTERVAL_MS (10 * 60 * 1000)
 #define NETWORK_SNTP_TIMEOUT_MS 15000
 #define NETWORK_SNTP_POLL_MS 100
 #define NETWORK_NTP_SERVER "ntp.aliyun.com"
 #define NETWORK_TIMEZONE "CST-8"
-#define NETWORK_TASK_STACK_SIZE 8192
-#define NETWORK_TASK_PRIORITY 4
 
 #define NETWORK_CONNECTED_BIT BIT0
 #define NETWORK_DISCONNECTED_BIT BIT1
@@ -42,18 +38,8 @@ static network_service_data_t s_data = {
     .retry_interval_ms = NETWORK_RETRY_INTERVAL_MS,
     .last_error = "network not started",
 };
-static bool s_initialized;
-
-static bool network_service_is_wifi_connected(void)
-{
-    bool connected;
-
-    xSemaphoreTake(s_data_mutex, portMAX_DELAY);
-    connected = s_data.wifi_connected;
-    xSemaphoreGive(s_data_mutex);
-
-    return connected;
-}
+static bool s_wifi_initialized;
+static bool s_wifi_started;
 
 static void network_service_copy_text(char *dst, size_t dst_size, const char *src)
 {
@@ -111,6 +97,7 @@ static void network_service_update_time_cache(bool synced_now)
     time(&now);
     localtime_r(&now, &timeinfo);
 
+    // RTC 延续的有效系统时间同样可作为缓存数据使用，即便本轮 NTP 连接失败。
     const bool system_time_valid = timeinfo.tm_year >= (2016 - 1900);
     if (!system_time_valid && !synced_now) {
         xSemaphoreTake(s_data_mutex, portMAX_DELAY);
@@ -174,16 +161,31 @@ static esp_err_t network_service_init_nvs(void)
     return ret;
 }
 
-static esp_err_t network_service_wifi_init_once(void)
+static esp_err_t network_service_start_wifi(void)
 {
-    if (s_initialized) {
+    if (s_wifi_started) {
         return ESP_OK;
     }
 
-    ESP_RETURN_ON_ERROR(network_service_init_nvs(), TAG, "nvs init failed");
-    ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "esp_netif init failed");
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start failed");
+    s_wifi_started = true;
+    return ESP_OK;
+}
 
-    esp_err_t err = esp_event_loop_create_default();
+static esp_err_t network_service_prepare_wifi(void)
+{
+    if (s_wifi_initialized) {
+        return network_service_start_wifi();
+    }
+
+    ESP_RETURN_ON_ERROR(network_service_init_nvs(), TAG, "nvs init failed");
+
+    esp_err_t err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        return err;
+    }
+
+    err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         return err;
     }
@@ -199,7 +201,7 @@ static esp_err_t network_service_wifi_init_once(void)
     }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "esp_wifi init failed");
+    ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "wifi init failed");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
                                                    &network_event_handler, NULL),
                         TAG, "register wifi handler failed");
@@ -208,10 +210,9 @@ static esp_err_t network_service_wifi_init_once(void)
                         TAG, "register ip handler failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "wifi storage failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "wifi mode failed");
-    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start failed");
 
-    s_initialized = true;
-    return ESP_OK;
+    s_wifi_initialized = true;
+    return network_service_start_wifi();
 }
 
 static bool network_service_connect_wifi(void)
@@ -246,6 +247,10 @@ static bool network_service_connect_wifi(void)
         if ((bits & NETWORK_CONNECTED_BIT) != 0) {
             network_service_update_error("");
             return true;
+        }
+        if ((bits & NETWORK_DISCONNECTED_BIT) != 0) {
+            network_service_update_error("wifi disconnected");
+            return false;
         }
 
         printf("wifi: connecting... %d/%d ms\n",
@@ -303,61 +308,51 @@ static bool network_service_sync_time(void)
     return true;
 }
 
-static void network_service_task(void *arg)
+esp_err_t network_service_init(void)
 {
-    (void)arg;
-    TickType_t last_time_attempt_tick = 0;
+    if (s_data_mutex != NULL) {
+        return ESP_OK;
+    }
 
-    esp_err_t err = network_service_wifi_init_once();
+    s_data_mutex = xSemaphoreCreateMutex();
+    if (s_data_mutex == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+bool network_service_update_once(void)
+{
+    // 先尝试使用 RTC 延续的系统时间；首次上电且未同步时仍会保持“时间未校准”。
+    network_service_update_time_cache(false);
+
+    const esp_err_t err = network_service_prepare_wifi();
     if (err != ESP_OK) {
         printf("network: init failed: %s\n", esp_err_to_name(err));
         network_service_update_error("network init failed");
-        vTaskDelete(NULL);
-        return;
+        return false;
     }
 
-    while (true) {
-        if (!network_service_is_wifi_connected()) {
-            if (!network_service_connect_wifi()) {
-                network_service_update_time_cache(false);
-                printf("network: retry in %d ms\n", NETWORK_RETRY_INTERVAL_MS);
-                vTaskDelay(pdMS_TO_TICKS(NETWORK_RETRY_INTERVAL_MS));
-                continue;
-            }
-
-            last_time_attempt_tick = 0;
-        }
-
+    if (!network_service_connect_wifi()) {
         network_service_update_time_cache(false);
-
-        TickType_t now_tick = xTaskGetTickCount();
-        if (last_time_attempt_tick == 0 ||
-            now_tick - last_time_attempt_tick >= pdMS_TO_TICKS(NETWORK_TIME_REFRESH_INTERVAL_MS)) {
-            // 时间同步失败时保留上一次有效时间；未校准时不会伪造日期。
-            last_time_attempt_tick = now_tick;
-            network_service_sync_time();
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(NETWORK_ONLINE_POLL_MS));
+        return false;
     }
+
+    return network_service_sync_time();
 }
 
-esp_err_t network_service_init(void)
+void network_service_shutdown(void)
 {
-    if (s_data_mutex == NULL) {
-        s_data_mutex = xSemaphoreCreateMutex();
-        if (s_data_mutex == NULL) {
-            return ESP_ERR_NO_MEM;
-        }
+    if (esp_sntp_enabled()) {
+        esp_sntp_stop();
     }
 
-    BaseType_t ok = xTaskCreate(network_service_task,
-                                "network_service",
-                                NETWORK_TASK_STACK_SIZE,
-                                NULL,
-                                NETWORK_TASK_PRIORITY,
-                                NULL);
-    return ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    if (s_wifi_started) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_disconnect());
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_stop());
+        s_wifi_started = false;
+    }
+    network_service_update_wifi_state(false, NULL);
 }
 
 void network_service_get_snapshot(network_service_data_t *snapshot)

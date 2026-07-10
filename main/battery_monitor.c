@@ -38,6 +38,7 @@ static TickType_t s_last_sample_tick;
 static int s_last_raw;
 static float s_last_voltage;
 static bool s_has_sample;
+static bool s_initialized;
 
 static float raw_to_battery_voltage(int raw)
 {
@@ -71,7 +72,7 @@ static esp_err_t read_adc_average(int *out_raw)
     return ESP_OK;
 }
 
-static void sample_battery_once(void)
+static esp_err_t sample_battery_once(void)
 {
     int raw = 0;
 
@@ -84,7 +85,7 @@ static void sample_battery_once(void)
     battery_sampling_enable(false);
     if (err != ESP_OK) {
         printf("battery: adc read failed: %s\n", esp_err_to_name(err));
-        return;
+        return err;
     }
 
     s_last_raw = raw;
@@ -94,10 +95,15 @@ static void sample_battery_once(void)
     // 避免 printf 浮点格式化的额外开销，转成整数毫伏后再打印成 x.xxxV。
     const int voltage_mv = (int)(s_last_voltage * 1000.0f + 0.5f);
     printf("battery: raw=%d voltage=%d.%03dV\n", s_last_raw, voltage_mv / 1000, voltage_mv % 1000);
+    return ESP_OK;
 }
 
 void battery_monitor_init(void)
 {
+    if (s_initialized) {
+        return;
+    }
+
     adc_unit_t adc_unit;
 
     gpio_config_t ctrl_config = {
@@ -133,6 +139,7 @@ void battery_monitor_init(void)
 
     // 让系统启动后第一次调用 update() 就能立即采样，而不是等待一个完整周期。
     s_last_sample_tick = xTaskGetTickCount() - pdMS_TO_TICKS(BATTERY_SAMPLE_INTERVAL_MS);
+    s_initialized = true;
 }
 
 void battery_monitor_update(void)
@@ -146,7 +153,14 @@ void battery_monitor_update(void)
 
     // 先更新时间戳，再执行采样。即使本次 ADC 异常，也不会立刻高频重试。
     s_last_sample_tick = now;
-    sample_battery_once();
+    (void)sample_battery_once();
+}
+
+esp_err_t battery_monitor_sample_now(void)
+{
+    // 深睡眠唤醒后的工作周期只采样一次，避免保留旧的轮询节奏。
+    s_last_sample_tick = xTaskGetTickCount();
+    return sample_battery_once();
 }
 
 bool battery_monitor_has_sample(void)

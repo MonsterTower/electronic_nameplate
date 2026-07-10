@@ -20,6 +20,7 @@
 #define EPAPER_SPI_MAX_TRANSFER_SIZE 4096
 
 static spi_device_handle_t s_epaper_spi;
+static bool s_bus_initialized;
 
 /* 总线层只关心“怎么把一个字节送到屏幕”，上层不直接碰 SPI 句柄和 GPIO 细节。 */
 static void epaper_bus_write_byte(uint8_t data)
@@ -34,6 +35,10 @@ static void epaper_bus_write_byte(uint8_t data)
 
 void epaper_bus_init(void)
 {
+    if (s_bus_initialized) {
+        return;
+    }
+
     /* 2.9 寸墨水屏只用 MOSI/CLK/CS 三根 SPI 线，MISO 不接。 */
     spi_bus_config_t bus_config = {
         .mosi_io_num = EPAPER_PIN_MOSI,
@@ -71,6 +76,7 @@ void epaper_bus_init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     ESP_ERROR_CHECK(gpio_config(&busy_config));
+    s_bus_initialized = true;
 }
 
 void epaper_bus_reset(void)

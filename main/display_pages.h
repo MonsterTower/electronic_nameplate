@@ -5,5 +5,7 @@
 
 void display_pages_init(void);
 void display_pages_show_state(int state, const app_model_t *model);
+void display_pages_show_low_battery(const app_model_t *model);
+void display_pages_sleep(void);
 
 #endif

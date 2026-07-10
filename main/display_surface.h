@@ -31,5 +31,6 @@ void display_surface_draw_utf8_text_box(int x, int y, int width, int height,
                                         const char *text, display_color_t color, int scale);
 bool display_surface_draw_image2lcd_centered(const unsigned char *image, size_t image_size);
 void display_surface_refresh(void);
+void display_surface_sleep(void);
 
 #endif

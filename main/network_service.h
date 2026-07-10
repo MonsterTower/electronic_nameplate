@@ -29,6 +29,10 @@ typedef struct {
 } network_service_data_t;
 
 esp_err_t network_service_init(void);
+// 执行一次受超时保护的 Wi-Fi 连接和 NTP 同步，不创建常驻联网任务。
+bool network_service_update_once(void);
+// 关闭本次工作周期打开的 Wi-Fi，Deep Sleep 前不保留无线外设。
+void network_service_shutdown(void);
 void network_service_get_snapshot(network_service_data_t *snapshot);
 
 #endif

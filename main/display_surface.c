@@ -349,3 +349,9 @@ void display_surface_refresh(void)
 {
     epaper_graphics_display();
 }
+
+void display_surface_sleep(void)
+{
+    // 刷新完成后让屏幕控制器休眠；墨水屏本身仍会保持已显示的画面。
+    epaper_driver_sleep();
+}

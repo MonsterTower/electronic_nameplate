@@ -12,7 +12,7 @@
 #define LED1 GPIO_NUM_14
 #define LED2 GPIO_NUM_21
 
-#define BUT_BOOT GPIO_NUM_0
+#define BUT_BOOT INPUT_PANEL_BOOT_GPIO
 #define BUT_PLUS GPIO_NUM_39
 #define BUT_MINUS GPIO_NUM_40
 
@@ -40,6 +40,8 @@ static int s_state = STATE_MIN;
 static button_state_t s_boot_button;
 static button_state_t s_plus_button;
 static button_state_t s_minus_button;
+static bool s_ignore_boot_until_release;
+static bool s_activity_event;
 
 // 按键使用内部上拉，按下时 GPIO 读到低电平。
 static bool is_button_pressed(gpio_num_t pin)
@@ -120,6 +122,14 @@ static bool update_button(button_state_t *button, TickType_t now)
 // BOOT 长按触发后设置 long_press_fired，松手时不会再执行短按。
 static void handle_boot_button(button_state_t *button, bool changed, TickType_t now)
 {
+    // Deep Sleep 由 BOOT 唤醒时，这一次按压只负责唤醒，不再混入短按或长按业务。
+    if (s_ignore_boot_until_release) {
+        if (changed && !button->stable_pressed) {
+            s_ignore_boot_until_release = false;
+        }
+        return;
+    }
+
     if (button->stable_pressed && !button->long_press_fired &&
         ticks_elapsed(now, button->press_start_tick, BOOT_LONG_PRESS_MS)) {
         button->long_press_fired = true;
@@ -154,6 +164,8 @@ void input_panel_init(void)
     init_button_state(&s_boot_button, BUT_BOOT, LED0);
     init_button_state(&s_plus_button, BUT_PLUS, LED1);
     init_button_state(&s_minus_button, BUT_MINUS, LED2);
+    s_ignore_boot_until_release = false;
+    s_activity_event = false;
 }
 
 void input_panel_update(void)
@@ -164,6 +176,13 @@ void input_panel_update(void)
     const bool boot_changed = update_button(&s_boot_button, now);
     const bool plus_changed = update_button(&s_plus_button, now);
     const bool minus_changed = update_button(&s_minus_button, now);
+
+    // 所有按键的稳定按下都算作用户活动，用于延长低功耗状态机的交互窗口。
+    if ((boot_changed && s_boot_button.stable_pressed) ||
+        (plus_changed && s_plus_button.stable_pressed) ||
+        (minus_changed && s_minus_button.stable_pressed)) {
+        s_activity_event = true;
+    }
 
     // LED 使用稳定后的按键状态，避免抖动时 LED 闪烁。
     gpio_set_level(s_boot_button.led_pin, s_boot_button.stable_pressed);
@@ -185,4 +204,27 @@ void input_panel_update(void)
 int input_panel_get_state(void)
 {
     return s_state;
+}
+
+void input_panel_set_state(int state)
+{
+    if (state < STATE_MIN || state > STATE_MAX) {
+        s_state = STATE_MIN;
+        return;
+    }
+
+    s_state = state;
+}
+
+void input_panel_ignore_boot_wakeup_press(void)
+{
+    // 如果芯片完成启动时按键已经松开，就无需忽略后续真正的用户按键。
+    s_ignore_boot_until_release = s_boot_button.stable_pressed;
+}
+
+bool input_panel_take_activity_event(void)
+{
+    const bool active = s_activity_event;
+    s_activity_event = false;
+    return active;
 }
