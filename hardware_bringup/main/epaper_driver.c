@@ -1,7 +1,6 @@
 #include "epaper_driver.h"
 
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 
 #include "freertos/FreeRTOS.h"
@@ -9,13 +8,11 @@
 
 #include "epaper_bus.h"
 
-#define EPAPER_WIDTH 400U
-#define EPAPER_HEIGHT 300U
-#define EPAPER_BYTES_PER_LINE (EPAPER_WIDTH / 8U)
-
 /* 三色全刷需要较长时间；超时只防止接线异常时无限阻塞。 */
 #define EPAPER_BUSY_TIMEOUT_MS 30000U
 #define EPAPER_BUSY_POLL_INTERVAL_MS 20U
+
+static bool s_driver_initialized;
 
 static esp_err_t epaper_send_command_data(uint8_t command, const uint8_t *data, size_t length)
 {
@@ -45,11 +42,9 @@ static esp_err_t epaper_wait_until_idle(const char *phase)
 static esp_err_t epaper_set_full_window(void)
 {
     const uint8_t data_entry_mode = 0x03;
-    const uint8_t x_window[] = {0x00, (EPAPER_WIDTH / 8U) - 1U};
-    const uint8_t y_window[] = {
-        0x00, 0x00,
-        (EPAPER_HEIGHT - 1U) & 0xFFU, (EPAPER_HEIGHT - 1U) >> 8U,
-    };
+    const uint8_t x_window[] = {0x00, EPAPER_BYTES_PER_LINE - 1U};
+    const uint8_t y_window[] = {0x00, 0x00, (EPAPER_HEIGHT - 1U) & 0xFFU,
+                                (EPAPER_HEIGHT - 1U) >> 8U};
     const uint8_t x_counter = 0x00;
     const uint8_t y_counter[] = {0x00, 0x00};
 
@@ -69,65 +64,37 @@ static esp_err_t epaper_set_full_window(void)
     return err;
 }
 
-static bool epaper_is_black_pixel(uint16_t x, uint16_t y)
+static esp_err_t epaper_write_plane(const uint8_t *buffer)
 {
-    const bool border = x == 0U || x == EPAPER_WIDTH - 1U || y == 0U || y == EPAPER_HEIGHT - 1U;
-    const bool lower_left_block = x >= 24U && x < 176U && y >= 24U && y < 124U;
-    return border || lower_left_block;
-}
-
-static bool epaper_is_red_pixel(uint16_t x, uint16_t y)
-{
-    return x >= 224U && x < 376U && y >= 176U && y < 276U;
-}
-
-static esp_err_t epaper_write_test_plane(bool red_plane)
-{
-    uint8_t line[EPAPER_BYTES_PER_LINE];
     esp_err_t err = epaper_bus_begin_data_stream();
     if (err != ESP_OK) {
         return err;
     }
 
-    for (uint16_t controller_y = 0U; controller_y < EPAPER_HEIGHT; ++controller_y) {
-        /* 控制器通常从屏幕顶部开始写入；对外坐标系固定为左下角 (0, 0)。 */
-        const uint16_t y = EPAPER_HEIGHT - 1U - controller_y;
-
-        for (uint16_t byte_index = 0U; byte_index < EPAPER_BYTES_PER_LINE; ++byte_index) {
-            uint8_t value = red_plane ? 0x00U : 0xFFU;
-            for (uint8_t bit_index = 0U; bit_index < 8U; ++bit_index) {
-                const uint16_t x = byte_index * 8U + bit_index;
-                const uint8_t bit_mask = 0x80U >> bit_index;
-
-                if (epaper_is_black_pixel(x, y)) {
-                    if (!red_plane) {
-                        value &= (uint8_t)~bit_mask;
-                    }
-                } else if (epaper_is_red_pixel(x, y) && red_plane) {
-                    value |= bit_mask;
-                }
-            }
-            line[byte_index] = value;
-        }
-
-        /* 除最后一行外保持 CS 有效，符合控制器一次写入完整 RAM 平面的要求。 */
-        err = epaper_bus_write_data_chunk(line, sizeof(line), controller_y + 1U < EPAPER_HEIGHT);
+    for (uint16_t row = 0U; row < EPAPER_HEIGHT; ++row) {
+        const uint8_t *line = &buffer[(size_t)row * EPAPER_BYTES_PER_LINE];
+        err = epaper_bus_write_data_chunk(line, EPAPER_BYTES_PER_LINE, row + 1U < EPAPER_HEIGHT);
         if (err != ESP_OK) {
             break;
         }
     }
+
     epaper_bus_end_data_stream();
     return err;
 }
 
-static esp_err_t epaper_driver_init(void)
+esp_err_t epaper_driver_init(void)
 {
+    if (s_driver_initialized) {
+        return ESP_OK;
+    }
+
     esp_err_t err = epaper_bus_init();
     if (err != ESP_OK) {
         return err;
     }
 
-    /* 硬复位后再等待空闲，避免控制器仍处于上电恢复流程时接收数据。 */
+    /* 控制器从深睡眠退出后必须复位并重建配置。 */
     epaper_bus_set_reset(false);
     vTaskDelay(pdMS_TO_TICKS(10U));
     epaper_bus_set_reset(true);
@@ -137,7 +104,7 @@ static esp_err_t epaper_driver_init(void)
         return err;
     }
 
-    err = epaper_bus_write_command(0x12); /* 软件复位 */
+    err = epaper_bus_write_command(0x12);
     if (err != ESP_OK) {
         return err;
     }
@@ -157,38 +124,50 @@ static esp_err_t epaper_driver_init(void)
     if (err == ESP_OK) {
         err = epaper_send_command_data(0x18, &temperature_sensor, sizeof(temperature_sensor));
     }
+    if (err == ESP_OK) {
+        s_driver_initialized = true;
+    }
     return err;
 }
 
-esp_err_t epaper_driver_show_test_pattern(void)
+esp_err_t epaper_driver_write_framebuffers(const uint8_t *black_buffer,
+                                           const uint8_t *red_buffer,
+                                           size_t buffer_size)
 {
+    if (black_buffer == NULL || red_buffer == NULL || buffer_size != EPAPER_FRAMEBUFFER_SIZE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     esp_err_t err = epaper_driver_init();
     if (err != ESP_OK) {
         return err;
     }
 
-    printf("epaper: writing black/white plane\n");
     err = epaper_set_full_window();
     if (err == ESP_OK) {
         err = epaper_bus_write_command(0x24);
     }
     if (err == ESP_OK) {
-        err = epaper_write_test_plane(false);
+        err = epaper_write_plane(black_buffer);
     }
 
     if (err == ESP_OK) {
-        printf("epaper: writing red plane\n");
         err = epaper_set_full_window();
     }
     if (err == ESP_OK) {
         err = epaper_bus_write_command(0x26);
     }
     if (err == ESP_OK) {
-        err = epaper_write_test_plane(true);
+        err = epaper_write_plane(red_buffer);
     }
+    return err;
+}
 
+esp_err_t epaper_driver_refresh(void)
+{
+    const uint8_t full_refresh = 0xF7;
+    esp_err_t err = epaper_driver_init();
     if (err == ESP_OK) {
-        const uint8_t full_refresh = 0xF7;
         printf("epaper: starting full refresh\n");
         err = epaper_send_command_data(0x22, &full_refresh, sizeof(full_refresh));
     }
@@ -198,15 +177,18 @@ esp_err_t epaper_driver_show_test_pattern(void)
     if (err == ESP_OK) {
         err = epaper_wait_until_idle("full refresh");
     }
-
     if (err == ESP_OK) {
-        printf("epaper: test pattern refresh complete\n");
+        printf("epaper: refresh complete\n");
     }
     return err;
 }
 
 esp_err_t epaper_driver_sleep(void)
 {
+    if (!s_driver_initialized) {
+        return ESP_OK;
+    }
+
     const uint8_t power_off = 0xC3;
     esp_err_t err = epaper_send_command_data(0x22, &power_off, sizeof(power_off));
     if (err == ESP_OK) {
@@ -220,6 +202,7 @@ esp_err_t epaper_driver_sleep(void)
         err = epaper_send_command_data(0x10, &deep_sleep, sizeof(deep_sleep));
     }
     if (err == ESP_OK) {
+        s_driver_initialized = false;
         printf("epaper: controller entered deep sleep\n");
     }
     return err;
