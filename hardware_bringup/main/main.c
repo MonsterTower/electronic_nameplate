@@ -5,6 +5,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "battery_monitor.h"
+#include "epaper_driver.h"
+
 /* 按键和 LED 的实际 PCB 引脚集中定义。PCB 标注的是模组管脚号，此处使用对应 GPIO。 */
 #define BUTTON_BOOT_GPIO GPIO_NUM_0
 #define BUTTON_MINUS_GPIO GPIO_NUM_39
@@ -109,10 +112,20 @@ static void button_led_update(void)
 void app_main(void)
 {
     button_led_init();
+    battery_monitor_init();
+    (void)battery_monitor_sample_now();
     printf("hardware bring-up: button to LED test started\n");
+
+    const esp_err_t epaper_err = epaper_driver_show_test_pattern();
+    if (epaper_err == ESP_OK) {
+        (void)epaper_driver_sleep();
+    } else {
+        printf("epaper: test pattern failed, error=%s\n", esp_err_to_name(epaper_err));
+    }
 
     while (true) {
         button_led_update();
+        battery_monitor_update();
         vTaskDelay(pdMS_TO_TICKS(BUTTON_SCAN_INTERVAL_MS));
     }
 }
