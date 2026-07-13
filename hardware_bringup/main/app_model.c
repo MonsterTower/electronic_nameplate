@@ -22,10 +22,9 @@ void app_model_init(app_model_t *model)
     model->time_synced = false;
     snprintf(model->weather, sizeof(model->weather), "%s", "天气未更新");
     snprintf(model->calendar_event, sizeof(model->calendar_event), "%s", "今日：电子设计实验");
-    model->has_course = true;
-    snprintf(model->next_course, sizeof(model->next_course), "%s", "嵌入式系统");
-    snprintf(model->next_course_time, sizeof(model->next_course_time), "%s", "14:00 - 15:40");
-    snprintf(model->next_course_room, sizeof(model->next_course_room), "%s", "教四 201");
+    model->schedule_item_count = 0;
+    model->teaching_week = 0;
+    model->schedule_data_valid = false;
     model->wifi_connected = false;
     snprintf(model->wifi_text, sizeof(model->wifi_text), "%s", "未连接");
 }

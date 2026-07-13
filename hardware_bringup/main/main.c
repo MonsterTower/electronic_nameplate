@@ -9,6 +9,7 @@
 #include "app_model.h"
 #include "display_pages.h"
 #include "network_service.h"
+#include "schedule_service.h"
 #include "weather_service.h"
 
 /* 按键和 LED 的实际 PCB 引脚集中定义。PCB 标注的是模组管脚号，此处使用对应 GPIO。 */
@@ -139,17 +140,19 @@ static void render_current_page(app_model_t *model)
     display_pages_sleep();
 }
 
-static void update_model_from_network(app_model_t *model)
+static void update_model_from_network(app_model_t *model, network_service_data_t *network_data)
 {
-    network_service_data_t network_data = {0};
-    network_service_get_snapshot(&network_data);
+    if (model == NULL || network_data == NULL) {
+        return;
+    }
+    network_service_get_snapshot(network_data);
 
-    model->wifi_connected = network_data.wifi_connected;
-    snprintf(model->wifi_text, sizeof(model->wifi_text), "%s", network_data.wifi_text);
-    model->time_synced = network_data.time_synced;
-    snprintf(model->date, sizeof(model->date), "%s", network_data.date);
-    snprintf(model->weekday, sizeof(model->weekday), "%s", network_data.weekday);
-    snprintf(model->time, sizeof(model->time), "%s", network_data.time);
+    model->wifi_connected = network_data->wifi_connected;
+    snprintf(model->wifi_text, sizeof(model->wifi_text), "%s", network_data->wifi_text);
+    model->time_synced = network_data->time_synced;
+    snprintf(model->date, sizeof(model->date), "%s", network_data->date);
+    snprintf(model->weekday, sizeof(model->weekday), "%s", network_data->weekday);
+    snprintf(model->time, sizeof(model->time), "%s", network_data->time);
 }
 
 void app_main(void)
@@ -164,11 +167,14 @@ void app_main(void)
 
     ESP_ERROR_CHECK(network_service_init());
     const bool time_synced = network_service_update_once();
-    update_model_from_network(&model);
+    network_service_data_t network_data = {0};
+    update_model_from_network(&model, &network_data);
     if (time_synced && model.wifi_connected) {
         (void)weather_service_refresh(&model);
+        (void)schedule_service_refresh(&model, &network_data.local_time);
     } else {
         printf("weather: skipped because network time is unavailable\n");
+        printf("schedule: skipped because network time is unavailable\n");
     }
 
     display_pages_init();

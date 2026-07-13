@@ -89,18 +89,165 @@ static void page_draw_calendar(const app_model_t *model)
     page_draw_fitted_centered(52, model->calendar_event, DISPLAY_COLOR_BLACK, 1);
 }
 
-static void page_draw_schedule(const app_model_t *model)
+static void page_copy_utf8_prefix(char *destination, size_t destination_size,
+                                  const char *source, size_t max_characters)
 {
-    page_begin(model, "今日课程");
-    if (!model->has_course) {
-        page_draw_fitted_centered(145, "无课", DISPLAY_COLOR_BLACK, 5);
+    size_t destination_length = 0;
+    size_t character_count = 0;
+
+    if (destination_size == 0U) {
+        return;
+    }
+    destination[0] = '\0';
+    if (source == NULL) {
         return;
     }
 
-    page_draw_fitted_centered(185, "下一节课程", DISPLAY_COLOR_RED, 2);
-    page_draw_fitted_centered(142, model->next_course, DISPLAY_COLOR_BLACK, 3);
-    page_draw_fitted_centered(99, model->next_course_time, DISPLAY_COLOR_BLACK, 2);
-    page_draw_fitted_centered(65, model->next_course_room, DISPLAY_COLOR_BLACK, 2);
+    while (*source != '\0' && character_count < max_characters) {
+        const unsigned char first = (unsigned char)*source;
+        size_t sequence_length = 1;
+        if ((first & 0xF0U) == 0xF0U) {
+            sequence_length = 4;
+        } else if ((first & 0xE0U) == 0xE0U) {
+            sequence_length = 3;
+        } else if ((first & 0xC0U) == 0xC0U) {
+            sequence_length = 2;
+        }
+        if (destination_length + sequence_length >= destination_size) {
+            break;
+        }
+        memcpy(&destination[destination_length], source, sequence_length);
+        destination_length += sequence_length;
+        source += sequence_length;
+        ++character_count;
+    }
+    destination[destination_length] = '\0';
+}
+
+static void page_draw_compact_text(int x, int y, int width, const char *text,
+                                   display_color_t color, int preferred_scale,
+                                   size_t max_characters)
+{
+    char compact_text[APP_MODEL_COURSE_LEN] = {0};
+    page_copy_utf8_prefix(compact_text, sizeof(compact_text), text, max_characters);
+
+    int scale = preferred_scale;
+    while (scale > 1 && display_surface_measure_utf8(compact_text, scale) > width) {
+        --scale;
+    }
+    display_surface_draw_utf8(x, y, compact_text, color, scale);
+}
+
+static const char *page_weekday_short_text(uint8_t weekday)
+{
+    static const char *const weekday_texts[] = {
+        "", "周一", "周二", "周三", "周四", "周五", "周六", "周日",
+    };
+    return weekday <= 7U ? weekday_texts[weekday] : "";
+}
+
+static const app_schedule_item_t *page_find_highlight_course(const app_model_t *model)
+{
+    for (uint8_t index = 0; index < model->schedule_item_count; ++index) {
+        if (model->schedule_items[index].is_current || model->schedule_items[index].is_next) {
+            return &model->schedule_items[index];
+        }
+    }
+    return NULL;
+}
+
+static void page_draw_schedule_highlight(const app_schedule_item_t *course)
+{
+    char title[32];
+    char time_range[16];
+    char details[APP_MODEL_TEACHER_LEN + APP_MODEL_ROOM_LEN + 4];
+
+    snprintf(time_range, sizeof(time_range), "%s-%s", course->start, course->end);
+    if (course->is_current) {
+        snprintf(title, sizeof(title), "%s", "当前课");
+    } else {
+        snprintf(title, sizeof(title), "下一节 %s", page_weekday_short_text(course->weekday));
+    }
+    snprintf(details, sizeof(details), "%s  %s", course->teacher, course->room);
+
+    display_surface_fill_rect(PAGE_CONTENT_LEFT, 162, PAGE_CONTENT_WIDTH, 72, DISPLAY_COLOR_RED);
+    display_surface_draw_utf8(PAGE_CONTENT_LEFT + 8, 216, title, DISPLAY_COLOR_WHITE, 1);
+    display_surface_draw_utf8(PAGE_CONTENT_LEFT + 116, 216, time_range, DISPLAY_COLOR_WHITE, 1);
+    page_draw_compact_text(PAGE_CONTENT_LEFT + 8, 185, PAGE_CONTENT_WIDTH - 16,
+                           course->name, DISPLAY_COLOR_WHITE, 2, 10);
+    page_draw_compact_text(PAGE_CONTENT_LEFT + 8, 166, PAGE_CONTENT_WIDTH - 16,
+                           details, DISPLAY_COLOR_WHITE, 1, 18);
+}
+
+static void page_draw_today_course_row(int y, const app_schedule_item_t *course)
+{
+    char time_range[16];
+
+    snprintf(time_range, sizeof(time_range), "%s-%s", course->start, course->end);
+    display_surface_draw_utf8(PAGE_CONTENT_LEFT, y, time_range, DISPLAY_COLOR_BLACK, 1);
+    page_draw_compact_text(122, y, 116, course->name, DISPLAY_COLOR_BLACK, 1, 7);
+    page_draw_compact_text(244, y, 132, course->room, DISPLAY_COLOR_BLACK, 1, 8);
+}
+
+static int page_next_future_course_index(const app_model_t *model, const bool selected[])
+{
+    for (uint8_t index = 0; index < model->schedule_item_count; ++index) {
+        const app_schedule_item_t *course = &model->schedule_items[index];
+        if (course->is_today || selected[index]) {
+            continue;
+        }
+        return (int)index;
+    }
+    return -1;
+}
+
+static void page_draw_future_course_row(int y, const app_schedule_item_t *course)
+{
+    char prefix[24];
+    snprintf(prefix, sizeof(prefix), "%s %s", page_weekday_short_text(course->weekday), course->start);
+    display_surface_draw_utf8(PAGE_CONTENT_LEFT, y, prefix, DISPLAY_COLOR_BLACK, 1);
+    page_draw_compact_text(142, y, 234, course->name, DISPLAY_COLOR_BLACK, 1, 13);
+}
+
+static void page_draw_schedule(const app_model_t *model)
+{
+    page_begin(model, "课程表");
+    if (!model->schedule_data_valid) {
+        page_draw_fitted_centered(145, "课表未更新", DISPLAY_COLOR_BLACK, 3);
+        return;
+    }
+
+    const app_schedule_item_t *highlight = page_find_highlight_course(model);
+    if (highlight != NULL) {
+        page_draw_schedule_highlight(highlight);
+    } else {
+        page_draw_fitted_centered(194, "本周无后续课程", DISPLAY_COLOR_BLACK, 2);
+    }
+
+    display_surface_draw_utf8(PAGE_CONTENT_LEFT, 145, "今日", DISPLAY_COLOR_RED, 1);
+    uint8_t today_row_count = 0;
+    for (uint8_t index = 0; index < model->schedule_item_count && today_row_count < 2U; ++index) {
+        const app_schedule_item_t *course = &model->schedule_items[index];
+        if (!course->is_today || course == highlight) {
+            continue;
+        }
+        page_draw_today_course_row(125 - (int)today_row_count * 20, course);
+        ++today_row_count;
+    }
+    if (today_row_count == 0U && (highlight == NULL || !highlight->is_today)) {
+        display_surface_draw_utf8(PAGE_CONTENT_LEFT + 52, 125, "今日无课", DISPLAY_COLOR_BLACK, 1);
+    }
+
+    display_surface_draw_utf8(PAGE_CONTENT_LEFT, 83, "近期", DISPLAY_COLOR_RED, 1);
+    bool selected[APP_MODEL_SCHEDULE_ITEM_COUNT] = {0};
+    for (uint8_t row = 0; row < 2U; ++row) {
+        const int future_index = page_next_future_course_index(model, selected);
+        if (future_index < 0) {
+            break;
+        }
+        selected[future_index] = true;
+        page_draw_future_course_row(64 - (int)row * 18, &model->schedule_items[future_index]);
+    }
 }
 
 static void page_draw_device_status(const app_model_t *model)

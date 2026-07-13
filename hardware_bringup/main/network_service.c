@@ -99,9 +99,11 @@ static void network_update_time_cache(bool synced_now)
         s_data.time_synced = false;
         s_data.date[0] = '\0';
         s_data.weekday[0] = '\0';
+        memset(&s_data.local_time, 0, sizeof(s_data.local_time));
         network_copy_text(s_data.time, sizeof(s_data.time), "时间未校准");
     } else {
         s_data.time_synced = true;
+        s_data.local_time = local_time;
         strftime(s_data.date, sizeof(s_data.date), "%Y-%m-%d", &local_time);
         network_copy_text(s_data.weekday, sizeof(s_data.weekday), weekdays[local_time.tm_wday]);
         strftime(s_data.time, sizeof(s_data.time), "%H:%M:%S", &local_time);
