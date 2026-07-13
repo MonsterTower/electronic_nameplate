@@ -8,6 +8,8 @@
 #include "battery_monitor.h"
 #include "app_model.h"
 #include "display_pages.h"
+#include "network_service.h"
+#include "weather_service.h"
 
 /* 按键和 LED 的实际 PCB 引脚集中定义。PCB 标注的是模组管脚号，此处使用对应 GPIO。 */
 #define BUTTON_BOOT_GPIO GPIO_NUM_0
@@ -137,6 +139,19 @@ static void render_current_page(app_model_t *model)
     display_pages_sleep();
 }
 
+static void update_model_from_network(app_model_t *model)
+{
+    network_service_data_t network_data = {0};
+    network_service_get_snapshot(&network_data);
+
+    model->wifi_connected = network_data.wifi_connected;
+    snprintf(model->wifi_text, sizeof(model->wifi_text), "%s", network_data.wifi_text);
+    model->time_synced = network_data.time_synced;
+    snprintf(model->date, sizeof(model->date), "%s", network_data.date);
+    snprintf(model->weekday, sizeof(model->weekday), "%s", network_data.weekday);
+    snprintf(model->time, sizeof(model->time), "%s", network_data.time);
+}
+
 void app_main(void)
 {
     button_led_init();
@@ -146,6 +161,16 @@ void app_main(void)
 
     app_model_t model;
     app_model_init(&model);
+
+    ESP_ERROR_CHECK(network_service_init());
+    const bool time_synced = network_service_update_once();
+    update_model_from_network(&model);
+    if (time_synced && model.wifi_connected) {
+        (void)weather_service_refresh(&model);
+    } else {
+        printf("weather: skipped because network time is unavailable\n");
+    }
+
     display_pages_init();
     render_current_page(&model);
 

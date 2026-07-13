@@ -30,6 +30,8 @@ typedef struct {
     char topic[APP_MODEL_TOPIC_LEN];
     char date[APP_MODEL_DATE_LEN];
     char weekday[APP_MODEL_WEEKDAY_LEN];
+    char time[APP_MODEL_TIME_LEN];
+    bool time_synced;
     char weather[APP_MODEL_WEATHER_LEN];
     char calendar_event[APP_MODEL_EVENT_LEN];
     bool has_course;

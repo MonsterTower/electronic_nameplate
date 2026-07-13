@@ -76,10 +76,17 @@ static void page_draw_nameplate(const app_model_t *model)
 static void page_draw_calendar(const app_model_t *model)
 {
     page_begin(model, "电子日历");
-    page_draw_fitted_centered(180, model->date, DISPLAY_COLOR_BLACK, 3);
-    page_draw_fitted_centered(138, model->weekday, DISPLAY_COLOR_RED, 3);
-    page_draw_fitted_centered(96, model->weather, DISPLAY_COLOR_BLACK, 2);
-    page_draw_fitted_centered(62, model->calendar_event, DISPLAY_COLOR_BLACK, 2);
+    if (!model->time_synced) {
+        page_draw_fitted_centered(158, "时间未校准", DISPLAY_COLOR_BLACK, 3);
+        page_draw_fitted_centered(104, model->weather, DISPLAY_COLOR_BLACK, 2);
+        return;
+    }
+
+    page_draw_fitted_centered(190, model->date, DISPLAY_COLOR_BLACK, 3);
+    page_draw_fitted_centered(150, model->weekday, DISPLAY_COLOR_RED, 3);
+    page_draw_fitted_centered(112, model->time, DISPLAY_COLOR_BLACK, 2);
+    page_draw_fitted_centered(78, model->weather, DISPLAY_COLOR_BLACK, 2);
+    page_draw_fitted_centered(52, model->calendar_event, DISPLAY_COLOR_BLACK, 1);
 }
 
 static void page_draw_schedule(const app_model_t *model)

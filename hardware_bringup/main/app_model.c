@@ -16,9 +16,11 @@ void app_model_init(app_model_t *model)
     snprintf(model->name, sizeof(model->name), "%s", "郑锦泽");
     snprintf(model->organization, sizeof(model->organization), "%s", "厦门大学");
     snprintf(model->topic, sizeof(model->topic), "%s", "电子设计");
-    snprintf(model->date, sizeof(model->date), "%s", "2026-07-13");
-    snprintf(model->weekday, sizeof(model->weekday), "%s", "星期一");
-    snprintf(model->weather, sizeof(model->weather), "%s", "晴 28C");
+    snprintf(model->date, sizeof(model->date), "%s", "");
+    snprintf(model->weekday, sizeof(model->weekday), "%s", "");
+    snprintf(model->time, sizeof(model->time), "%s", "时间未校准");
+    model->time_synced = false;
+    snprintf(model->weather, sizeof(model->weather), "%s", "天气未更新");
     snprintf(model->calendar_event, sizeof(model->calendar_event), "%s", "今日：电子设计实验");
     model->has_course = true;
     snprintf(model->next_course, sizeof(model->next_course), "%s", "嵌入式系统");
