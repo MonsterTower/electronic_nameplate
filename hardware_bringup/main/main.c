@@ -8,6 +8,7 @@
 #include "freertos/task.h"
 
 #include "battery_monitor.h"
+#include "audio_test.h"
 #include "app_cache.h"
 #include "app_model.h"
 #include "display_pages.h"
@@ -351,6 +352,12 @@ void app_main(void)
     battery_monitor_init();
     (void)battery_monitor_sample_now();
     printf("hardware bring-up: button to LED test started\n");
+#if AUDIO_TEST_RUN_ON_COLD_BOOT
+    if (wake_reason == POWER_WAKE_COLD_BOOT) {
+        const esp_err_t audio_test_err = audio_test_run_once();
+        printf("audio: hardware test %s\n", audio_test_err == ESP_OK ? "complete" : "finished with errors");
+    }
+#endif
 
     app_model_t model;
     app_model_init(&model);
