@@ -25,6 +25,18 @@
 #define BATTERY_SAMPLE_INTERVAL_MS 6000U
 #define BATTERY_SAMPLE_COUNT 8
 
+typedef struct {
+    float voltage;
+    uint8_t percent;
+} battery_curve_point_t;
+
+/* 按锂电池静置电压的非线性平台做插值，避免把 3.7V 误当作 50%。 */
+static const battery_curve_point_t s_battery_curve[] = {
+    {BATTERY_FULL_VOLTAGE, 100U}, {4.10f, 90U}, {4.00f, 80U}, {3.90f, 60U},
+    {3.80f, 50U},                 {3.75f, 40U}, {3.70f, 30U}, {3.65f, 20U},
+    {BATTERY_LOW_VOLTAGE, 10U},   {BATTERY_EMPTY_VOLTAGE, 0U},
+};
+
 static adc_oneshot_unit_handle_t s_adc_handle;
 static adc_channel_t s_adc_channel;
 static TickType_t s_last_sample_tick;
@@ -32,6 +44,26 @@ static int s_last_raw;
 static float s_last_voltage;
 static bool s_has_sample;
 static bool s_initialized;
+
+static uint8_t battery_voltage_to_percentage(float voltage)
+{
+    if (voltage >= s_battery_curve[0].voltage) {
+        return s_battery_curve[0].percent;
+    }
+
+    const size_t point_count = sizeof(s_battery_curve) / sizeof(s_battery_curve[0]);
+    for (size_t index = 1; index < point_count; ++index) {
+        const battery_curve_point_t upper = s_battery_curve[index - 1U];
+        const battery_curve_point_t lower = s_battery_curve[index];
+        if (voltage >= lower.voltage) {
+            const float ratio = (voltage - lower.voltage) / (upper.voltage - lower.voltage);
+            const float percent = (float)lower.percent +
+                                  ratio * (float)(upper.percent - lower.percent);
+            return (uint8_t)(percent + 0.5f);
+        }
+    }
+    return 0U;
+}
 
 static float raw_to_battery_voltage(int raw)
 {
@@ -81,7 +113,9 @@ static esp_err_t sample_battery_once(void)
     s_has_sample = true;
 
     const int voltage_mv = (int)(s_last_voltage * 1000.0f + 0.5f);
-    printf("battery: raw=%d voltage=%d.%03dV\n", raw, voltage_mv / 1000, voltage_mv % 1000);
+    printf("battery: raw=%d voltage=%d.%03dV percent=%u\n", raw,
+           voltage_mv / 1000, voltage_mv % 1000,
+           (unsigned)battery_monitor_get_percentage());
     return ESP_OK;
 }
 
@@ -152,4 +186,19 @@ int battery_monitor_get_raw(void)
 float battery_monitor_get_voltage(void)
 {
     return s_last_voltage;
+}
+
+uint8_t battery_monitor_get_percentage(void)
+{
+    return s_has_sample ? battery_voltage_to_percentage(s_last_voltage) : 0U;
+}
+
+bool battery_monitor_is_low(void)
+{
+    return s_has_sample && s_last_voltage <= BATTERY_LOW_VOLTAGE;
+}
+
+bool battery_monitor_is_critical(void)
+{
+    return s_has_sample && s_last_voltage <= BATTERY_EMPTY_VOLTAGE;
 }

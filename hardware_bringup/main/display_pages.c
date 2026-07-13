@@ -35,11 +35,12 @@ static void page_draw_fitted_centered(int y, const char *text, display_color_t c
 
 static void page_draw_status_bar(const app_model_t *model)
 {
-    char battery_text[24];
+    char battery_text[32];
     char wifi_text[48];
 
     if (model->has_battery_sample) {
-        snprintf(battery_text, sizeof(battery_text), "电池 %.2fV", (double)model->battery_voltage);
+        snprintf(battery_text, sizeof(battery_text), "电池 %.2fV %u%%",
+                 (double)model->battery_voltage, (unsigned)model->battery_percent);
     } else {
         snprintf(battery_text, sizeof(battery_text), "%s", "电池 读取中");
     }
@@ -47,7 +48,8 @@ static void page_draw_status_bar(const app_model_t *model)
 
     display_surface_draw_line(PAGE_CONTENT_LEFT, PAGE_STATUS_LINE_Y,
                               PAGE_CONTENT_RIGHT, PAGE_STATUS_LINE_Y, DISPLAY_COLOR_RED);
-    display_surface_draw_utf8(PAGE_CONTENT_LEFT, 16, battery_text, DISPLAY_COLOR_BLACK, 1);
+    display_surface_draw_utf8(PAGE_CONTENT_LEFT, 16, battery_text,
+                              model->battery_low ? DISPLAY_COLOR_RED : DISPLAY_COLOR_BLACK, 1);
 
     const int wifi_width = display_surface_measure_utf8(wifi_text, 1);
     const int wifi_x = DISPLAY_SURFACE_WIDTH - PAGE_CONTENT_LEFT - wifi_width;
@@ -252,18 +254,31 @@ static void page_draw_schedule(const app_model_t *model)
 
 static void page_draw_device_status(const app_model_t *model)
 {
-    char battery_text[24];
+    char battery_text[32];
 
     page_begin(model, "设备状态");
     if (model->has_battery_sample) {
-        snprintf(battery_text, sizeof(battery_text), "%.2fV", (double)model->battery_voltage);
+        snprintf(battery_text, sizeof(battery_text), "%.2fV  %u%%",
+                 (double)model->battery_voltage, (unsigned)model->battery_percent);
     } else {
-        snprintf(battery_text, sizeof(battery_text), "%s", "--.--V");
+        snprintf(battery_text, sizeof(battery_text), "%s", "--.--V  --%");
     }
-    page_draw_fitted_centered(170, battery_text, DISPLAY_COLOR_BLACK, 5);
-    page_draw_fitted_centered(116, "当前电量", DISPLAY_COLOR_RED, 2);
-    page_draw_fitted_centered(78, model->wifi_connected ? "Wi-Fi 已连接" : "Wi-Fi 未连接",
-                              DISPLAY_COLOR_BLACK, 2);
+    page_draw_fitted_centered(170, battery_text,
+                              model->battery_low ? DISPLAY_COLOR_RED : DISPLAY_COLOR_BLACK, 4);
+    page_draw_fitted_centered(122, "当前电量", DISPLAY_COLOR_RED, 2);
+    page_draw_fitted_centered(78,
+                              model->battery_critical ? "电量耗尽，请充电" :
+                              (model->battery_low ? "电量低，请充电" :
+                               (model->wifi_connected ? "Wi-Fi 已连接" : "Wi-Fi 未连接")),
+                              model->battery_low ? DISPLAY_COLOR_RED : DISPLAY_COLOR_BLACK, 2);
+}
+
+static void display_pages_refresh(void)
+{
+    const esp_err_t err = display_surface_refresh();
+    if (err != ESP_OK) {
+        printf("display: page refresh failed: %s\n", esp_err_to_name(err));
+    }
 }
 
 void display_pages_init(void)
@@ -294,10 +309,21 @@ void display_pages_render(const app_model_t *model)
     }
 
     printf("display: rendering page %d\n", (int)model->page);
-    const esp_err_t err = display_surface_refresh();
-    if (err != ESP_OK) {
-        printf("display: page refresh failed: %s\n", esp_err_to_name(err));
+    display_pages_refresh();
+}
+
+void display_pages_render_network_waiting(const app_model_t *model)
+{
+    if (model == NULL) {
+        return;
     }
+
+    page_begin(model, "网络连接");
+    page_draw_fitted_centered(158, "正在连接 Wi-Fi", DISPLAY_COLOR_BLACK, 3);
+    page_draw_fitted_centered(104, "请稍候", DISPLAY_COLOR_RED, 2);
+    printf("display: rendering network waiting page\n");
+    display_pages_refresh();
+    display_pages_sleep();
 }
 
 void display_pages_sleep(void)

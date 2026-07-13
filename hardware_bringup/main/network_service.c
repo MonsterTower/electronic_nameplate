@@ -17,7 +17,7 @@
 #include "network_config.h"
 #include "nvs_flash.h"
 
-#define NETWORK_CONNECT_TIMEOUT_MS 10000U
+#define NETWORK_CONNECT_TIMEOUT_MS 25000U
 #define NETWORK_CONNECT_PROGRESS_MS 500U
 #define NETWORK_SNTP_TIMEOUT_MS 15000U
 #define NETWORK_SNTP_POLL_MS 100U
@@ -157,7 +157,7 @@ static esp_err_t network_prepare_wifi(void)
         ESP_ERROR_CHECK(nvs_flash_erase());
         err = nvs_flash_init();
     }
-    if (err != ESP_OK) {
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         return err;
     }
 
@@ -247,7 +247,7 @@ static esp_err_t network_configure_enterprise(void)
     return err == ESP_OK ? esp_wifi_sta_enterprise_enable() : err;
 }
 
-static bool network_connect_wifi(void)
+static bool network_start_wifi_connection(void)
 {
     wifi_config_t wifi_config = {0};
     const bool enterprise = network_uses_enterprise();
@@ -286,6 +286,11 @@ static bool network_connect_wifi(void)
         return false;
     }
 
+    return true;
+}
+
+static bool network_wait_for_ip(void)
+{
     for (uint32_t elapsed_ms = 0; elapsed_ms < NETWORK_CONNECT_TIMEOUT_MS;
          elapsed_ms += NETWORK_CONNECT_PROGRESS_MS) {
         const EventBits_t bits = xEventGroupWaitBits(s_wifi_events,
@@ -352,15 +357,33 @@ esp_err_t network_service_init(void)
 
 bool network_service_update_once(void)
 {
+    if (!network_service_start_connection()) {
+        return false;
+    }
+    if (!network_service_wait_for_connection()) {
+        return false;
+    }
+    return network_service_sync_time_once();
+}
+
+bool network_service_start_connection(void)
+{
     network_update_time_cache(false);
     const esp_err_t err = network_prepare_wifi();
     if (err != ESP_OK) {
         printf("network: init failed: %s\n", esp_err_to_name(err));
         return false;
     }
-    if (!network_connect_wifi()) {
-        return false;
-    }
+    return network_start_wifi_connection();
+}
+
+bool network_service_wait_for_connection(void)
+{
+    return network_wait_for_ip();
+}
+
+bool network_service_sync_time_once(void)
+{
     return network_sync_time();
 }
 
@@ -372,4 +395,20 @@ void network_service_get_snapshot(network_service_data_t *snapshot)
     xSemaphoreTake(s_data_mutex, portMAX_DELAY);
     *snapshot = s_data;
     xSemaphoreGive(s_data_mutex);
+}
+
+void network_service_shutdown(void)
+{
+    if (!s_wifi_started) {
+        return;
+    }
+
+    (void)esp_wifi_disconnect();
+    const esp_err_t err = esp_wifi_stop();
+    if (err == ESP_OK) {
+        s_wifi_started = false;
+        printf("wifi: stopped before sleep\n");
+    } else {
+        printf("wifi: stop failed: %s\n", esp_err_to_name(err));
+    }
 }

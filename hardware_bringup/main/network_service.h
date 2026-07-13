@@ -18,5 +18,9 @@ typedef struct {
 } network_service_data_t;
 
 esp_err_t network_service_init(void);
+bool network_service_start_connection(void);
+bool network_service_wait_for_connection(void);
+bool network_service_sync_time_once(void);
 bool network_service_update_once(void);
 void network_service_get_snapshot(network_service_data_t *snapshot);
+void network_service_shutdown(void);

@@ -58,9 +58,13 @@ typedef struct {
     char wifi_text[APP_MODEL_WIFI_TEXT_LEN];
     bool has_battery_sample;
     float battery_voltage;
+    uint8_t battery_percent;
+    bool battery_low;
+    bool battery_critical;
 } app_model_t;
 
 void app_model_init(app_model_t *model);
 void app_model_next_page(app_model_t *model);
 void app_model_previous_page(app_model_t *model);
 void app_model_update_battery(app_model_t *model, bool has_sample, float voltage);
+void app_model_update_battery_level(app_model_t *model, uint8_t percent, bool low, bool critical);

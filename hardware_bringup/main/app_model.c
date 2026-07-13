@@ -27,6 +27,9 @@ void app_model_init(app_model_t *model)
     model->schedule_data_valid = false;
     model->wifi_connected = false;
     snprintf(model->wifi_text, sizeof(model->wifi_text), "%s", "未连接");
+    model->battery_percent = 0U;
+    model->battery_low = false;
+    model->battery_critical = false;
 }
 
 void app_model_next_page(app_model_t *model)
@@ -53,4 +56,15 @@ void app_model_update_battery(app_model_t *model, bool has_sample, float voltage
     }
     model->has_battery_sample = has_sample;
     model->battery_voltage = voltage;
+}
+
+void app_model_update_battery_level(app_model_t *model, uint8_t percent, bool low, bool critical)
+{
+    if (model == NULL) {
+        return;
+    }
+
+    model->battery_percent = percent;
+    model->battery_low = low;
+    model->battery_critical = critical;
 }
