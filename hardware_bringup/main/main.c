@@ -1,8 +1,10 @@
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "battery_monitor.h"
@@ -30,6 +32,8 @@
 
 #define BUTTON_SCAN_INTERVAL_MS 10U
 #define BUTTON_DEBOUNCE_MS 30U
+#define NETWORK_UPDATE_TASK_STACK_SIZE 16384U
+#define NETWORK_UPDATE_TASK_PRIORITY (tskIDLE_PRIORITY + 1U)
 
 typedef struct {
     gpio_num_t button_gpio;
@@ -47,11 +51,23 @@ typedef enum {
     BUTTON_EVENT_PLUS,
 } button_event_t;
 
+typedef struct {
+    bool running;
+    bool completed;
+    bool time_synced;
+    bool weather_updated;
+    bool schedule_updated;
+    network_service_data_t network_data;
+    app_model_t updated_model;
+} network_update_job_t;
+
 static button_led_pair_t s_button_led_pairs[] = {
     {.button_gpio = BUTTON_BOOT_GPIO, .led_gpio = LED_BOOT_GPIO, .name = "BOOT"},
     {.button_gpio = BUTTON_MINUS_GPIO, .led_gpio = LED_MINUS_GPIO, .name = "BUT-"},
     {.button_gpio = BUTTON_PLUS_GPIO, .led_gpio = LED_PLUS_GPIO, .name = "BUT+"},
 };
+static SemaphoreHandle_t s_network_job_mutex;
+static network_update_job_t s_network_job;
 
 static bool button_is_pressed(int level)
 {
@@ -205,6 +221,129 @@ static void clear_cold_start_network_data(app_model_t *model)
     clear_time_and_weather(model);
 }
 
+static void merge_network_data(app_model_t *model, const app_model_t *updated_model)
+{
+    if (model == NULL || updated_model == NULL) {
+        return;
+    }
+
+    model->wifi_connected = updated_model->wifi_connected;
+    snprintf(model->wifi_text, sizeof(model->wifi_text), "%s", updated_model->wifi_text);
+    model->time_synced = updated_model->time_synced;
+    snprintf(model->date, sizeof(model->date), "%s", updated_model->date);
+    snprintf(model->weekday, sizeof(model->weekday), "%s", updated_model->weekday);
+    snprintf(model->time, sizeof(model->time), "%s", updated_model->time);
+    snprintf(model->weather, sizeof(model->weather), "%s", updated_model->weather);
+    memcpy(model->schedule_items, updated_model->schedule_items, sizeof(model->schedule_items));
+    model->schedule_item_count = updated_model->schedule_item_count;
+    model->teaching_week = updated_model->teaching_week;
+    model->schedule_data_valid = updated_model->schedule_data_valid;
+}
+
+static void network_update_task(void *argument)
+{
+    (void)argument;
+
+    app_model_t updated_model = {0};
+    xSemaphoreTake(s_network_job_mutex, portMAX_DELAY);
+    updated_model = s_network_job.updated_model;
+    xSemaphoreGive(s_network_job_mutex);
+
+    const bool time_synced = network_service_update_once();
+    network_service_data_t network_data = {0};
+    network_service_get_snapshot(&network_data);
+    const bool update_succeeded = time_synced && network_data.wifi_connected;
+    bool weather_updated = false;
+    bool schedule_updated = false;
+
+    if (network_data.wifi_connected) {
+        update_model_wifi_from_network(&updated_model, &network_data);
+    }
+    if (update_succeeded) {
+        update_model_time_from_network(&updated_model, &network_data);
+        weather_updated = weather_service_refresh(&updated_model);
+        schedule_updated = schedule_service_refresh(&updated_model, &network_data.local_time);
+        update_model_battery(&updated_model);
+        printf("network: weather=%s schedule=%s\n", weather_updated ? "updated" : "cached",
+               schedule_updated ? "updated" : "cached");
+    } else {
+        printf("weather: skipped because network time is unavailable\n");
+        printf("schedule: skipped because network time is unavailable\n");
+    }
+
+    xSemaphoreTake(s_network_job_mutex, portMAX_DELAY);
+    s_network_job.time_synced = update_succeeded;
+    s_network_job.weather_updated = weather_updated;
+    s_network_job.schedule_updated = schedule_updated;
+    s_network_job.network_data = network_data;
+    s_network_job.updated_model = updated_model;
+    s_network_job.running = false;
+    s_network_job.completed = true;
+    xSemaphoreGive(s_network_job_mutex);
+    vTaskDelete(NULL);
+}
+
+static bool network_update_start(const app_model_t *model)
+{
+    if (model == NULL || s_network_job_mutex == NULL) {
+        return false;
+    }
+
+    xSemaphoreTake(s_network_job_mutex, portMAX_DELAY);
+    if (s_network_job.running || s_network_job.completed) {
+        xSemaphoreGive(s_network_job_mutex);
+        return false;
+    }
+    s_network_job = (network_update_job_t){
+        .running = true,
+        .updated_model = *model,
+    };
+    xSemaphoreGive(s_network_job_mutex);
+
+    const BaseType_t created = xTaskCreate(network_update_task, "network_update",
+                                           NETWORK_UPDATE_TASK_STACK_SIZE,
+                                           NULL, NETWORK_UPDATE_TASK_PRIORITY, NULL);
+    if (created == pdPASS) {
+        printf("network: update task started\n");
+        return true;
+    }
+
+    xSemaphoreTake(s_network_job_mutex, portMAX_DELAY);
+    s_network_job.running = false;
+    xSemaphoreGive(s_network_job_mutex);
+    printf("network: update task creation failed\n");
+    return false;
+}
+
+static bool network_update_is_running(void)
+{
+    if (s_network_job_mutex == NULL) {
+        return false;
+    }
+
+    xSemaphoreTake(s_network_job_mutex, portMAX_DELAY);
+    const bool running = s_network_job.running;
+    xSemaphoreGive(s_network_job_mutex);
+    return running;
+}
+
+static bool network_update_take_result(network_update_job_t *result)
+{
+    if (result == NULL || s_network_job_mutex == NULL) {
+        return false;
+    }
+
+    xSemaphoreTake(s_network_job_mutex, portMAX_DELAY);
+    if (!s_network_job.completed) {
+        xSemaphoreGive(s_network_job_mutex);
+        return false;
+    }
+    *result = s_network_job;
+    s_network_job.completed = false;
+    xSemaphoreGive(s_network_job_mutex);
+    return true;
+}
+
 void app_main(void)
 {
     button_led_init();
@@ -223,70 +362,34 @@ void app_main(void)
 
     const bool cold_boot = wake_reason == POWER_WAKE_COLD_BOOT;
     bool network_updated = false;
-    bool render_required = cold_boot;
+    bool network_started = false;
     if (model.battery_low) {
         printf("power: low battery, Wi-Fi update skipped\n");
         (void)app_cache_save(&model);
-        render_required = true;
+        render_current_page(&model);
     } else {
         ESP_ERROR_CHECK(network_service_init());
-        const bool connection_started = network_service_start_connection();
-        const bool calendar_waiting = connection_started && !cold_boot &&
-                                      model.page == APP_PAGE_CALENDAR;
-        if (connection_started && (cold_boot || calendar_waiting)) {
+        s_network_job_mutex = xSemaphoreCreateMutex();
+        if (s_network_job_mutex == NULL) {
+            printf("network: result mutex creation failed\n");
+        } else {
+            network_started = network_update_start(&model);
+        }
+        if (network_started && (cold_boot || model.page == APP_PAGE_CALENDAR)) {
             /* Wi-Fi 认证与墨水屏全刷并行进行，避免用户面对空白等待。 */
             display_pages_render_network_waiting(&model);
-        }
-        const bool time_synced = connection_started && network_service_wait_for_connection() &&
-                                 network_service_sync_time_once();
-        network_service_data_t network_data = {0};
-        network_service_get_snapshot(&network_data);
-        if (network_data.wifi_connected) {
-            update_model_wifi_from_network(&model, &network_data);
-        }
-
-        if (time_synced && network_data.wifi_connected) {
-            update_model_time_from_network(&model, &network_data);
-            const bool weather_updated = weather_service_refresh(&model);
-            const bool schedule_updated = schedule_service_refresh(&model, &network_data.local_time);
-            if (cold_boot && !weather_updated) {
-                snprintf(model.weather, sizeof(model.weather), "%s", "天气未更新");
-            }
-            update_model_battery(&model);
-            if (cold_boot) {
-                model.page = APP_PAGE_NAMEPLATE;
-            }
+        } else if (cold_boot) {
+            clear_cold_start_network_data(&model);
             (void)app_cache_save(&model);
-            network_updated = true;
-            render_required = true;
-            printf("network: weather=%s schedule=%s\n", weather_updated ? "updated" : "cached",
-                   schedule_updated ? "updated" : "cached");
-        } else {
-            printf("weather: skipped because network time is unavailable\n");
-            printf("schedule: skipped because network time is unavailable\n");
-            if (cold_boot) {
-                if (network_data.wifi_connected) {
-                    clear_time_and_weather(&model);
-                    model.page = APP_PAGE_NAMEPLATE;
-                } else {
-                    clear_cold_start_network_data(&model);
-                }
-                (void)app_cache_save(&model);
-                render_required = true;
-            }
-            render_required = render_required || calendar_waiting;
+            render_current_page(&model);
         }
-    }
-
-    if (render_required) {
-        render_current_page(&model);
     }
 
     if (model.battery_low) {
         enter_sleep(POWER_MANAGER_LOW_BATTERY_SLEEP_SECONDS,
                     model.battery_critical ? "critical battery" : "low battery");
     }
-    if (wake_reason == POWER_WAKE_TIMER) {
+    if (wake_reason == POWER_WAKE_TIMER && !network_started) {
         enter_sleep(network_updated ? POWER_MANAGER_NORMAL_SLEEP_SECONDS :
                                      POWER_MANAGER_NETWORK_RETRY_SLEEP_SECONDS,
                     network_updated ? "periodic update complete" : "network retry");
@@ -298,17 +401,64 @@ void app_main(void)
         battery_monitor_update();
         update_model_battery(&model);
 
+        network_update_job_t network_result = {0};
+        if (network_update_take_result(&network_result)) {
+            network_started = false;
+            if (network_result.time_synced) {
+                merge_network_data(&model, &network_result.updated_model);
+                network_updated = true;
+                if (cold_boot) {
+                    if (!network_result.weather_updated) {
+                        snprintf(model.weather, sizeof(model.weather), "%s", "天气未更新");
+                    }
+                    model.page = APP_PAGE_NAMEPLATE;
+                }
+                (void)app_cache_save(&model);
+            } else if (cold_boot) {
+                if (network_result.network_data.wifi_connected) {
+                    update_model_wifi_from_network(&model, &network_result.network_data);
+                    clear_time_and_weather(&model);
+                    model.page = APP_PAGE_NAMEPLATE;
+                } else {
+                    clear_cold_start_network_data(&model);
+                }
+                (void)app_cache_save(&model);
+            } else if (network_result.network_data.wifi_connected) {
+                /* 仅更新本次确认得到的 Wi-Fi 状态，保留旧时间、天气和课表。 */
+                update_model_wifi_from_network(&model, &network_result.network_data);
+                (void)app_cache_save(&model);
+            }
+
+            if (cold_boot || model.page == APP_PAGE_CALENDAR) {
+                render_current_page(&model);
+            }
+            if (wake_reason == POWER_WAKE_TIMER) {
+                enter_sleep(network_updated ? POWER_MANAGER_NORMAL_SLEEP_SECONDS :
+                                             POWER_MANAGER_NETWORK_RETRY_SLEEP_SECONDS,
+                            network_updated ? "periodic update complete" : "network retry");
+            }
+            power_manager_start_interaction();
+        }
+
         if (event == BUTTON_EVENT_MINUS) {
             app_model_previous_page(&model);
             (void)app_cache_save(&model);
             printf("page: switched to %d\n", (int)model.page);
-            render_current_page(&model);
+            if (network_update_is_running() && model.page == APP_PAGE_CALENDAR) {
+                display_pages_render_network_waiting(&model);
+            } else {
+                render_current_page(&model);
+            }
             power_manager_note_activity();
         } else if (event == BUTTON_EVENT_PLUS) {
             app_model_next_page(&model);
             (void)app_cache_save(&model);
             printf("page: switched to %d\n", (int)model.page);
-            render_current_page(&model);
+            if (network_update_is_running() && model.page == APP_PAGE_CALENDAR) {
+                display_pages_render_network_waiting(&model);
+            } else {
+                render_current_page(&model);
+            }
             power_manager_note_activity();
         } else if (event == BUTTON_EVENT_BOOT) {
             printf("power: interaction retained by BOOT\n");
@@ -321,7 +471,7 @@ void app_main(void)
             enter_sleep(POWER_MANAGER_LOW_BATTERY_SLEEP_SECONDS,
                         model.battery_critical ? "critical battery" : "low battery");
         }
-        if (power_manager_interaction_expired()) {
+        if (!network_update_is_running() && power_manager_interaction_expired()) {
             enter_sleep(network_updated ? POWER_MANAGER_NORMAL_SLEEP_SECONDS :
                                          POWER_MANAGER_NETWORK_RETRY_SLEEP_SECONDS,
                         network_updated ? "interaction timeout" : "network retry");
