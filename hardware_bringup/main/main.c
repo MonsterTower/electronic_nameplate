@@ -35,6 +35,13 @@ typedef struct {
     TickType_t last_raw_change_tick;
 } button_led_pair_t;
 
+typedef enum {
+    BUTTON_EVENT_NONE = 0,
+    BUTTON_EVENT_BOOT,
+    BUTTON_EVENT_MINUS,
+    BUTTON_EVENT_PLUS,
+} button_event_t;
+
 static button_led_pair_t s_button_led_pairs[] = {
     {.button_gpio = BUTTON_BOOT_GPIO, .led_gpio = LED_BOOT_GPIO, .name = "BOOT"},
     {.button_gpio = BUTTON_MINUS_GPIO, .led_gpio = LED_MINUS_GPIO, .name = "BUT-"},
@@ -88,8 +95,9 @@ static void button_led_init(void)
     }
 }
 
-static void button_led_update(void)
+static button_event_t button_led_update(void)
 {
+    button_event_t event = BUTTON_EVENT_NONE;
     const TickType_t now = xTaskGetTickCount();
     for (size_t i = 0; i < sizeof(s_button_led_pairs) / sizeof(s_button_led_pairs[0]); ++i) {
         button_led_pair_t *pair = &s_button_led_pairs[i];
@@ -106,8 +114,27 @@ static void button_led_update(void)
             button_led_apply(pair);
             printf("button: %s %s\n", pair->name,
                    button_is_pressed(pair->stable_level) ? "pressed" : "released");
+            if (!button_is_pressed(pair->stable_level)) {
+                continue;
+            }
+
+            if (pair->button_gpio == BUTTON_BOOT_GPIO) {
+                event = BUTTON_EVENT_BOOT;
+            } else if (pair->button_gpio == BUTTON_MINUS_GPIO) {
+                event = BUTTON_EVENT_MINUS;
+            } else if (pair->button_gpio == BUTTON_PLUS_GPIO) {
+                event = BUTTON_EVENT_PLUS;
+            }
         }
     }
+    return event;
+}
+
+static void render_current_page(app_model_t *model)
+{
+    app_model_update_battery(model, battery_monitor_has_sample(), battery_monitor_get_voltage());
+    display_pages_render(model);
+    display_pages_sleep();
 }
 
 void app_main(void)
@@ -120,12 +147,24 @@ void app_main(void)
     app_model_t model;
     app_model_init(&model);
     display_pages_init();
-    display_pages_show_nameplate(&model);
-    display_pages_sleep();
+    render_current_page(&model);
 
     while (true) {
-        button_led_update();
+        const button_event_t event = button_led_update();
         battery_monitor_update();
+
+        if (event == BUTTON_EVENT_MINUS) {
+            app_model_previous_page(&model);
+            printf("page: switched to %d\n", (int)model.page);
+            render_current_page(&model);
+        } else if (event == BUTTON_EVENT_PLUS) {
+            app_model_next_page(&model);
+            printf("page: switched to %d\n", (int)model.page);
+            render_current_page(&model);
+        } else if (event == BUTTON_EVENT_BOOT) {
+            printf("page: BOOT retained for future action\n");
+        }
+
         vTaskDelay(pdMS_TO_TICKS(BUTTON_SCAN_INTERVAL_MS));
     }
 }

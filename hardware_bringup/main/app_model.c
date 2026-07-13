@@ -11,8 +11,45 @@ void app_model_init(app_model_t *model)
 
     memset(model, 0, sizeof(*model));
 
-    /* 首轮页面使用本地默认数据；后续 Wi-Fi/JSON 只需更新此模型。 */
+    /* 首轮页面使用本地默认数据；后续 Wi-Fi、NTP 与 JSON 只需更新此模型。 */
+    model->page = APP_PAGE_NAMEPLATE;
     snprintf(model->name, sizeof(model->name), "%s", "郑锦泽");
     snprintf(model->organization, sizeof(model->organization), "%s", "厦门大学");
     snprintf(model->topic, sizeof(model->topic), "%s", "电子设计");
+    snprintf(model->date, sizeof(model->date), "%s", "2026-07-13");
+    snprintf(model->weekday, sizeof(model->weekday), "%s", "星期一");
+    snprintf(model->weather, sizeof(model->weather), "%s", "晴 28C");
+    snprintf(model->calendar_event, sizeof(model->calendar_event), "%s", "今日：电子设计实验");
+    model->has_course = true;
+    snprintf(model->next_course, sizeof(model->next_course), "%s", "嵌入式系统");
+    snprintf(model->next_course_time, sizeof(model->next_course_time), "%s", "14:00 - 15:40");
+    snprintf(model->next_course_room, sizeof(model->next_course_room), "%s", "教四 201");
+    model->wifi_connected = false;
+    snprintf(model->wifi_text, sizeof(model->wifi_text), "%s", "未连接");
+}
+
+void app_model_next_page(app_model_t *model)
+{
+    if (model == NULL) {
+        return;
+    }
+    model->page = (app_page_t)((model->page + 1) % APP_PAGE_COUNT);
+}
+
+void app_model_previous_page(app_model_t *model)
+{
+    if (model == NULL) {
+        return;
+    }
+    model->page = model->page == APP_PAGE_NAMEPLATE ? APP_PAGE_STATUS :
+                  (app_page_t)(model->page - 1);
+}
+
+void app_model_update_battery(app_model_t *model, bool has_sample, float voltage)
+{
+    if (model == NULL) {
+        return;
+    }
+    model->has_battery_sample = has_sample;
+    model->battery_voltage = voltage;
 }
