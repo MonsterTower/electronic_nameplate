@@ -45,7 +45,7 @@ void app_model_previous_page(app_model_t *model)
     if (model == NULL) {
         return;
     }
-    model->page = model->page == APP_PAGE_NAMEPLATE ? APP_PAGE_STATUS :
+    model->page = model->page == APP_PAGE_NAMEPLATE ? (APP_PAGE_COUNT - 1) :
                   (app_page_t)(model->page - 1);
 }
 

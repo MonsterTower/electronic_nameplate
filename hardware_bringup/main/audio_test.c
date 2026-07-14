@@ -178,7 +178,7 @@ static uint32_t audio_calculate_ac_rms(int64_t sum, uint64_t sum_squares, uint32
     return audio_integer_sqrt(mean_square > dc_square ? mean_square - dc_square : 0U);
 }
 
-static esp_err_t audio_sample_microphone(void)
+static esp_err_t audio_sample_microphone(uint32_t duration_ms)
 {
     i2s_chan_handle_t microphone_channel = NULL;
     esp_err_t err = audio_create_microphone_channel(&microphone_channel);
@@ -188,7 +188,8 @@ static esp_err_t audio_sample_microphone(void)
     }
 
     int32_t frames[AUDIO_MIC_BUFFER_FRAMES * 2U] = {0};
-    const uint32_t target_samples = AUDIO_SAMPLE_RATE_HZ * AUDIO_MIC_SAMPLE_DURATION_MS / 1000U;
+    const bool continuous = duration_ms == 0U;
+    const uint32_t target_samples = AUDIO_SAMPLE_RATE_HZ * duration_ms / 1000U;
     uint32_t sample_count = 0U;
     int32_t minimum = INT32_MAX;
     int32_t maximum = INT32_MIN;
@@ -200,10 +201,15 @@ static esp_err_t audio_sample_microphone(void)
     int32_t window_maximum = INT32_MIN;
     int64_t window_sum = 0;
     uint64_t window_sum_squares = 0U;
+    uint32_t window_number = 0U;
 
-    printf("audio: microphone sampling start, %u ms; stay quiet, then speak or clap\n",
-           AUDIO_MIC_SAMPLE_DURATION_MS);
-    while (sample_count < target_samples) {
+    if (continuous) {
+        printf("audio: continuous microphone monitor started; set monitor macro to 0 to exit\n");
+    } else {
+        printf("audio: microphone sampling start, %" PRIu32
+               " ms; stay quiet, then speak or clap\n", duration_ms);
+    }
+    while (continuous || sample_count < target_samples) {
         size_t bytes_read = 0U;
         err = i2s_channel_read(microphone_channel, frames, sizeof(frames), &bytes_read,
                                pdMS_TO_TICKS(1000));
@@ -213,7 +219,8 @@ static esp_err_t audio_sample_microphone(void)
         }
 
         const size_t frame_count = bytes_read / (sizeof(int32_t) * 2U);
-        for (size_t frame = 0U; frame < frame_count && sample_count < target_samples; ++frame) {
+        for (size_t frame = 0U;
+             frame < frame_count && (continuous || sample_count < target_samples); ++frame) {
             /* INMP441 的 24 位有效数据左对齐在 32 位左声道槽位中，缩小为 16 位后统计。 */
             const int32_t sample = frames[frame * 2U] >> 16;
             if (sample < minimum) {
@@ -235,13 +242,14 @@ static esp_err_t audio_sample_microphone(void)
             window_sum_squares += (uint64_t)((int64_t)sample * sample);
             ++window_count;
 
-            if (window_count >= report_sample_count || sample_count == target_samples) {
+            if (window_count >= report_sample_count || (!continuous && sample_count == target_samples)) {
                 const int32_t window_average = (int32_t)(window_sum / (int64_t)window_count);
                 const uint32_t window_rms = audio_calculate_ac_rms(window_sum, window_sum_squares,
                                                                     window_count);
-                printf("audio: microphone window=%" PRIu32 "ms min=%" PRId32 " max=%" PRId32
+                ++window_number;
+                printf("audio: microphone window=%" PRIu32 " min=%" PRId32 " max=%" PRId32
                        " average=%" PRId32 " ac_rms=%" PRIu32 "\n",
-                       sample_count * 1000U / AUDIO_SAMPLE_RATE_HZ, window_minimum, window_maximum,
+                       window_number, window_minimum, window_maximum,
                        window_average, window_rms);
                 window_count = 0U;
                 window_minimum = INT32_MAX;
@@ -273,7 +281,7 @@ esp_err_t audio_test_run_once(void)
         /* 避免功放关闭瞬态和测试音尾音影响紧随其后的麦克风基线。 */
         vTaskDelay(pdMS_TO_TICKS(500));
     }
-    const esp_err_t microphone_err = audio_sample_microphone();
+    const esp_err_t microphone_err = audio_sample_microphone(AUDIO_MIC_SAMPLE_DURATION_MS);
     if (speaker_err != ESP_OK) {
         printf("audio: speaker test failed: %s\n", esp_err_to_name(speaker_err));
     }
@@ -281,4 +289,13 @@ esp_err_t audio_test_run_once(void)
         printf("audio: microphone test failed: %s\n", esp_err_to_name(microphone_err));
     }
     return speaker_err != ESP_OK ? speaker_err : microphone_err;
+}
+
+void audio_test_run_microphone_monitor(void)
+{
+    while (true) {
+        const esp_err_t err = audio_sample_microphone(0U);
+        printf("audio: microphone monitor stopped: %s; retrying in 1 second\n", esp_err_to_name(err));
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }

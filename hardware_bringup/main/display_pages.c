@@ -273,6 +273,14 @@ static void page_draw_device_status(const app_model_t *model)
                               model->battery_low ? DISPLAY_COLOR_RED : DISPLAY_COLOR_BLACK, 2);
 }
 
+static void page_draw_ai(const app_model_t *model)
+{
+    page_begin(model, "小智 AI");
+    page_draw_fitted_centered(168, "小智 AI", DISPLAY_COLOR_BLACK, 4);
+    page_draw_fitted_centered(112, "语音对话", DISPLAY_COLOR_RED, 2);
+    page_draw_fitted_centered(72, "按 BOOT 开始", DISPLAY_COLOR_BLACK, 2);
+}
+
 static void display_pages_refresh(void)
 {
     const esp_err_t err = display_surface_refresh();
@@ -303,6 +311,11 @@ void display_pages_render(const app_model_t *model)
         page_draw_schedule(model);
         break;
     case APP_PAGE_STATUS:
+        page_draw_device_status(model);
+        break;
+    case APP_PAGE_AI:
+        page_draw_ai(model);
+        break;
     default:
         page_draw_device_status(model);
         break;

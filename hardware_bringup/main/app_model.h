@@ -22,6 +22,7 @@ typedef enum {
     APP_PAGE_CALENDAR,
     APP_PAGE_SCHEDULE,
     APP_PAGE_STATUS,
+    APP_PAGE_AI,
     APP_PAGE_COUNT,
 } app_page_t;
 
