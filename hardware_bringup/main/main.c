@@ -179,6 +179,7 @@ static void button_led_turn_off(void)
 static void enter_sleep(uint32_t sleep_seconds, const char *reason)
 {
     display_pages_sleep();
+    ai_service_stop_session();
     network_service_shutdown();
     button_led_turn_off();
     power_manager_enter_deep_sleep(sleep_seconds, reason);

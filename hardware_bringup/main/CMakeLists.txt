@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c" "battery_monitor.c" "audio_test.c" "ai_service.c" "epaper_bus.c" "epaper_driver.c" "app_cache.c"
+    SRCS "main.c" "battery_monitor.c" "audio_test.c" "audio_service.c" "ai_service.c" "epaper_bus.c" "epaper_driver.c" "app_cache.c"
          "power_manager.c"
          "app_model.c" "display_surface.c" "display_pages.c"
          "network_service.c" "weather_service.c" "schedule_service.c"
