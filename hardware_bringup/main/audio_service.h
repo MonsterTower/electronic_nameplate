@@ -29,6 +29,8 @@ esp_err_t audio_service_start_session(void);
 /* 停止本轮麦克风采集，保留已进入编码队列的末尾音频供上层发送。 */
 void audio_service_pause_capture(void);
 void audio_service_stop_session(void);
+/* TTS 末包播放完毕后释放下行解码器，给下一轮上行录音归还内存。 */
+void audio_service_finish_playback(void);
 bool audio_service_is_session_active(void);
 bool audio_service_take_opus_packet(audio_service_opus_packet_t *packet, TickType_t timeout);
 void audio_service_discard_capture_frames(void);

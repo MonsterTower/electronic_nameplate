@@ -25,7 +25,7 @@
 #define AUDIO_SERVICE_CAPTURE_TASK_CORE 0
 #define AUDIO_SERVICE_CODEC_TASK_STACK_SIZE (2048U * 12U)
 #define AUDIO_SERVICE_CODEC_TASK_PRIORITY 2U
-#define AUDIO_SERVICE_SPEAKER_GAIN_PERCENT 40U
+#define AUDIO_SERVICE_SPEAKER_GAIN_PERCENT 60U
 #define AUDIO_SERVICE_PLAYBACK_DEFAULT_SAMPLE_RATE_HZ 24000U
 #define AUDIO_SERVICE_PLAYBACK_MAX_SAMPLE_RATE_HZ 24000U
 #define AUDIO_SERVICE_PLAYBACK_MAX_FRAME_MS 120U
@@ -435,6 +435,26 @@ void audio_service_pause_capture(void)
     s_capture_enabled = false;
 }
 
+void audio_service_finish_playback(void)
+{
+    bool released = false;
+    if (s_speaker_enabled) {
+        (void)i2s_channel_disable(s_speaker_channel);
+        s_speaker_enabled = false;
+        released = true;
+    }
+    if (s_opus_decoder != NULL) {
+        esp_opus_dec_close(s_opus_decoder);
+        s_opus_decoder = NULL;
+        released = true;
+    }
+    s_decoder_sample_rate_hz = 0U;
+    s_decoder_frame_duration_ms = 0U;
+    if (released) {
+        printf("audio: TTS playback resources released\n");
+    }
+}
+
 void audio_service_stop_session(void)
 {
     s_session_active = false;
@@ -451,10 +471,7 @@ void audio_service_stop_session(void)
     if (s_microphone_channel != NULL) {
         (void)i2s_channel_disable(s_microphone_channel);
     }
-    if (s_speaker_enabled) {
-        (void)i2s_channel_disable(s_speaker_channel);
-        s_speaker_enabled = false;
-    }
+    audio_service_finish_playback();
     if (s_capture_queue != NULL) {
         xQueueReset(s_capture_queue);
     }
@@ -465,14 +482,8 @@ void audio_service_stop_session(void)
         esp_opus_enc_close(s_opus_encoder);
         s_opus_encoder = NULL;
     }
-    if (s_opus_decoder != NULL) {
-        esp_opus_dec_close(s_opus_decoder);
-        s_opus_decoder = NULL;
-    }
     s_encoder_input_size = 0;
     s_encoder_output_size = 0;
-    s_decoder_sample_rate_hz = 0U;
-    s_decoder_frame_duration_ms = 0U;
     printf("audio: session stopped\n");
 }
 

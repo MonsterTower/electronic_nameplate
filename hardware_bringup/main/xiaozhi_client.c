@@ -744,9 +744,11 @@ static void xiaozhi_handle_text_message(const char *message, size_t length, bool
             audio_service_reset_playback_diagnostics();
             printf("xiaozhi: server TTS started; microphone upload paused\n");
         } else if (strcmp(state->valuestring, "stop") == 0) {
-            s_session_state = XIAOZHI_SESSION_READY;
             xiaozhi_print_opus_stats("reply", reply_stats);
             audio_service_print_playback_diagnostics();
+            /* 最后一包 TTS 已播放完成，此时释放解码器，避免挤占下一轮录音内存。 */
+            audio_service_finish_playback();
+            s_session_state = XIAOZHI_SESSION_READY;
             printf("xiaozhi: server TTS complete; press BOOT to start the next utterance\n");
         } else if (strcmp(state->valuestring, "sentence_start") == 0) {
             const cJSON *text = cJSON_GetObjectItemCaseSensitive(root, "text");
