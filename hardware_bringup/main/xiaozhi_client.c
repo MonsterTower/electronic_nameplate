@@ -29,8 +29,9 @@
 #define XIAOZHI_WSS_CONNECT_TIMEOUT_MS 10000U
 #define XIAOZHI_WSS_HELLO_TIMEOUT_MS 10000U
 #define XIAOZHI_WSS_READ_SLICE_MS 100U
-#define XIAOZHI_CLIENT_TASK_STACK_SIZE 12288U
+#define XIAOZHI_CLIENT_TASK_STACK_SIZE 16384U
 #define XIAOZHI_CLIENT_TASK_PRIORITY (tskIDLE_PRIORITY + 1U)
+#define XIAOZHI_CLIENT_TASK_CORE 1
 
 #define XIAOZHI_RESPONSE_BUFFER_SIZE 4096U
 #define XIAOZHI_URL_MAX_LEN 256U
@@ -38,7 +39,7 @@
 #define XIAOZHI_UUID_LEN 37U
 #define XIAOZHI_DEVICE_ID_LEN 18U
 #define XIAOZHI_SESSION_ID_MAX_LEN 96U
-#define XIAOZHI_WSS_RECEIVE_BUFFER_SIZE 2048U
+#define XIAOZHI_WSS_RECEIVE_BUFFER_SIZE 4096U
 #define XIAOZHI_BINARY_V2_HEADER_SIZE 16U
 #define XIAOZHI_BINARY_V3_HEADER_SIZE 4U
 #define XIAOZHI_NVS_NAMESPACE "xiaozhi"
@@ -72,6 +73,20 @@ typedef struct {
     uint32_t frame_duration_ms;
 } xiaozhi_server_session_t;
 
+/*
+ * esp_transport_read() 不保证一次读完一个 WebSocket 帧。此结构把同一条
+ * 文本或二进制消息累计到完整后再交给 JSON、Opus 等上层逻辑处理。
+ */
+typedef struct {
+    uint8_t *data;
+    size_t capacity;
+    size_t length;
+    size_t frame_expected_length;
+    size_t frame_received_length;
+    int opcode;
+    bool started;
+} xiaozhi_ws_message_buffer_t;
+
 static TaskHandle_t s_session_task;
 static volatile bool s_stop_requested;
 
@@ -82,6 +97,70 @@ static bool xiaozhi_copy_text(char *destination, size_t destination_size, const 
     }
     const int length = snprintf(destination, destination_size, "%s", source);
     return length >= 0 && (size_t)length < destination_size;
+}
+
+static void xiaozhi_reset_ws_message_buffer(xiaozhi_ws_message_buffer_t *message)
+{
+    if (message == NULL) {
+        return;
+    }
+    message->length = 0U;
+    message->frame_expected_length = 0U;
+    message->frame_received_length = 0U;
+    message->opcode = WS_TRANSPORT_OPCODES_CONT;
+    message->started = false;
+}
+
+/* 返回 true 表示当前读到的数据已被接收；message_complete 表示一条消息已完整。 */
+static bool xiaozhi_append_ws_read(esp_transport_handle_t websocket,
+                                   xiaozhi_ws_message_buffer_t *message,
+                                   size_t read_length, bool *message_complete)
+{
+    if (websocket == NULL || message == NULL || message_complete == NULL ||
+        message->data == NULL || read_length == 0U) {
+        return false;
+    }
+    *message_complete = false;
+
+    const int read_opcode = esp_transport_ws_get_read_opcode(websocket);
+    if (!message->started) {
+        if (read_opcode != WS_TRANSPORT_OPCODES_TEXT && read_opcode != WS_TRANSPORT_OPCODES_BINARY) {
+            return false;
+        }
+        message->opcode = read_opcode;
+        message->started = true;
+    } else if (message->frame_expected_length == 0U &&
+               read_opcode != WS_TRANSPORT_OPCODES_CONT) {
+        /* 非分片消息已结束，却没有重置缓存，避免把两条消息拼接。 */
+        return false;
+    }
+
+    if (message->frame_expected_length == 0U) {
+        const int payload_length = esp_transport_ws_get_read_payload_len(websocket);
+        if (payload_length <= 0 || (size_t)payload_length >= message->capacity - message->length) {
+            return false;
+        }
+        message->frame_expected_length = (size_t)payload_length;
+        message->frame_received_length = 0U;
+    }
+
+    if (read_length > message->frame_expected_length - message->frame_received_length ||
+        read_length >= message->capacity - message->length) {
+        return false;
+    }
+    message->length += read_length;
+    message->frame_received_length += read_length;
+
+    if (message->frame_received_length == message->frame_expected_length) {
+        if (esp_transport_ws_get_fin_flag(websocket)) {
+            *message_complete = true;
+        } else {
+            /* WebSocket 分片消息：继续接收下一段 CONT 帧。 */
+            message->frame_expected_length = 0U;
+            message->frame_received_length = 0U;
+        }
+    }
+    return true;
 }
 
 static void xiaozhi_get_device_id(char device_id[XIAOZHI_DEVICE_ID_LEN])
@@ -436,9 +515,10 @@ static bool xiaozhi_parse_server_hello(const char *message, size_t length,
                                    cJSON_GetObjectItemCaseSensitive(audio_params, "sample_rate") : NULL;
     const cJSON *frame_duration = cJSON_IsObject(audio_params) ?
                                       cJSON_GetObjectItemCaseSensitive(audio_params, "frame_duration") : NULL;
-    if (valid && (!cJSON_IsString(session_id) ||
-                  !xiaozhi_copy_text(session->session_id, sizeof(session->session_id),
-                                     session_id->valuestring))) {
+    /* 官方实现将 session_id 视为可选字段，缺省时仍接受 hello 并发送空会话 ID。 */
+    if (valid && cJSON_IsString(session_id) &&
+        !xiaozhi_copy_text(session->session_id, sizeof(session->session_id),
+                           session_id->valuestring)) {
         valid = false;
     }
     if (valid && cJSON_IsNumber(sample_rate) && sample_rate->valueint > 0) {
@@ -449,7 +529,8 @@ static bool xiaozhi_parse_server_hello(const char *message, size_t length,
     }
     if (valid) {
         printf("xiaozhi: server hello received, session=%s sample_rate=%lu frame=%lu ms\n",
-               session->session_id, (unsigned long)session->sample_rate_hz,
+               session->session_id[0] != '\0' ? session->session_id : "(none)",
+               (unsigned long)session->sample_rate_hz,
                (unsigned long)session->frame_duration_ms);
     }
     cJSON_Delete(root);
@@ -477,11 +558,13 @@ static uint32_t xiaozhi_read_u32_be(const uint8_t *data)
 }
 
 static bool xiaozhi_send_audio(esp_transport_handle_t websocket, uint32_t protocol_version,
-                               const uint8_t *opus_packet, size_t opus_length)
+                               const uint8_t *opus_packet, size_t opus_length,
+                               uint8_t *serialized_packet, size_t serialized_capacity)
 {
-    uint8_t packet[XIAOZHI_BINARY_V2_HEADER_SIZE + AUDIO_SERVICE_OPUS_PACKET_MAX_SIZE] = {0};
     size_t header_length = 0U;
-    if (opus_packet == NULL || opus_length == 0U || opus_length > AUDIO_SERVICE_OPUS_PACKET_MAX_SIZE) {
+    if (opus_packet == NULL || serialized_packet == NULL || opus_length == 0U ||
+        opus_length > AUDIO_SERVICE_OPUS_PACKET_MAX_SIZE ||
+        serialized_capacity < XIAOZHI_BINARY_V2_HEADER_SIZE + opus_length) {
         return false;
     }
 
@@ -489,24 +572,26 @@ static bool xiaozhi_send_audio(esp_transport_handle_t websocket, uint32_t protoc
         const uint16_t version = htons(2U);
         const uint32_t timestamp = htonl((uint32_t)xTaskGetTickCount() * portTICK_PERIOD_MS);
         const uint32_t payload_length = htonl((uint32_t)opus_length);
-        memcpy(packet, &version, sizeof(version));
-        memcpy(packet + 8U, &timestamp, sizeof(timestamp));
-        memcpy(packet + 12U, &payload_length, sizeof(payload_length));
+        memset(serialized_packet, 0, XIAOZHI_BINARY_V2_HEADER_SIZE);
+        memcpy(serialized_packet, &version, sizeof(version));
+        memcpy(serialized_packet + 8U, &timestamp, sizeof(timestamp));
+        memcpy(serialized_packet + 12U, &payload_length, sizeof(payload_length));
         header_length = XIAOZHI_BINARY_V2_HEADER_SIZE;
     } else if (protocol_version == 3U) {
         const uint16_t payload_length = htons((uint16_t)opus_length);
-        packet[0] = 0U;
-        memcpy(packet + 2U, &payload_length, sizeof(payload_length));
+        serialized_packet[0] = 0U;
+        serialized_packet[1] = 0U;
+        memcpy(serialized_packet + 2U, &payload_length, sizeof(payload_length));
         header_length = XIAOZHI_BINARY_V3_HEADER_SIZE;
     } else {
         header_length = 0U;
     }
 
-    memcpy(packet + header_length, opus_packet, opus_length);
+    memcpy(serialized_packet + header_length, opus_packet, opus_length);
     const int packet_length = (int)(header_length + opus_length);
     return esp_transport_ws_send_raw(websocket,
                                      WS_TRANSPORT_OPCODES_BINARY | WS_TRANSPORT_OPCODES_FIN,
-                                     (const char *)packet, packet_length,
+                                     (const char *)serialized_packet, packet_length,
                                      XIAOZHI_WSS_CONNECT_TIMEOUT_MS) == packet_length;
 }
 
@@ -582,6 +667,9 @@ static bool xiaozhi_open_websocket(const char *client_id, const char *device_id,
     char host[128] = {0};
     char path[XIAOZHI_URL_MAX_LEN] = {0};
     int port = 0;
+    uint8_t *received = NULL;
+    uint8_t *serialized_packet = NULL;
+    audio_service_opus_packet_t *outgoing_packet = NULL;
     if (!xiaozhi_parse_wss_url(config->url, host, sizeof(host), path, sizeof(path), &port)) {
         printf("xiaozhi: unsupported websocket url %s\n", config->url);
         return false;
@@ -625,6 +713,19 @@ static bool xiaozhi_open_websocket(const char *client_id, const char *device_id,
 
     bool connected = false;
     bool audio_started = false;
+    received = malloc(XIAOZHI_WSS_RECEIVE_BUFFER_SIZE);
+    serialized_packet = malloc(XIAOZHI_BINARY_V2_HEADER_SIZE + AUDIO_SERVICE_OPUS_PACKET_MAX_SIZE);
+    outgoing_packet = malloc(sizeof(*outgoing_packet));
+    if (received == NULL || serialized_packet == NULL || outgoing_packet == NULL) {
+        printf("xiaozhi: audio session buffer allocation failed\n");
+        connected = false;
+        goto cleanup;
+    }
+    xiaozhi_ws_message_buffer_t incoming = {
+        .data = received,
+        .capacity = XIAOZHI_WSS_RECEIVE_BUFFER_SIZE,
+    };
+    xiaozhi_reset_ws_message_buffer(&incoming);
     printf("xiaozhi: websocket connecting to %s:%d\n", host, port);
     if (esp_transport_connect(websocket, host, port, XIAOZHI_WSS_CONNECT_TIMEOUT_MS) < 0) {
         printf("xiaozhi: websocket connection failed, status=%d errno=%d\n",
@@ -647,12 +748,12 @@ static bool xiaozhi_open_websocket(const char *client_id, const char *device_id,
     }
 
     const TickType_t started = xTaskGetTickCount();
-    uint8_t received[XIAOZHI_WSS_RECEIVE_BUFFER_SIZE] = {0};
     xiaozhi_server_session_t server_session = {0};
     while (!s_stop_requested &&
            xTaskGetTickCount() - started < pdMS_TO_TICKS(XIAOZHI_WSS_HELLO_TIMEOUT_MS)) {
-        const int received_length = esp_transport_read(websocket, (char *)received, sizeof(received) - 1U,
-                                                        XIAOZHI_WSS_READ_SLICE_MS);
+        const int received_length = esp_transport_read(
+            websocket, (char *)received + incoming.length,
+            XIAOZHI_WSS_RECEIVE_BUFFER_SIZE - incoming.length - 1U, XIAOZHI_WSS_READ_SLICE_MS);
         if (received_length < 0) {
             printf("xiaozhi: websocket read failed\n");
             break;
@@ -660,15 +761,31 @@ static bool xiaozhi_open_websocket(const char *client_id, const char *device_id,
         if (received_length == 0) {
             continue;
         }
-        if (esp_transport_ws_get_read_opcode(websocket) != WS_TRANSPORT_OPCODES_TEXT) {
+        bool message_complete = false;
+        if (!xiaozhi_append_ws_read(websocket, &incoming, (size_t)received_length,
+                                    &message_complete)) {
+            printf("xiaozhi: invalid handshake frame opcode=%d length=%d\n",
+                   esp_transport_ws_get_read_opcode(websocket), received_length);
+            xiaozhi_reset_ws_message_buffer(&incoming);
             continue;
         }
-        received[received_length] = '\0';
-        if (xiaozhi_parse_server_hello((const char *)received, (size_t)received_length,
+        if (!message_complete) {
+            continue;
+        }
+        received[incoming.length] = '\0';
+        if (incoming.opcode != WS_TRANSPORT_OPCODES_TEXT) {
+            printf("xiaozhi: ignored handshake frame opcode=%d length=%u\n", incoming.opcode,
+                   (unsigned)incoming.length);
+            xiaozhi_reset_ws_message_buffer(&incoming);
+            continue;
+        }
+        if (xiaozhi_parse_server_hello((const char *)received, incoming.length,
                                        &server_session)) {
             connected = true;
             break;
         }
+        printf("xiaozhi: ignored handshake text: %.160s\n", (const char *)received);
+        xiaozhi_reset_ws_message_buffer(&incoming);
     }
     if (!connected && !s_stop_requested) {
         printf("xiaozhi: server hello timeout\n");
@@ -689,23 +806,25 @@ static bool xiaozhi_open_websocket(const char *client_id, const char *device_id,
     }
 
     printf("xiaozhi: voice session started; speak after this message\n");
+    printf("xiaozhi: session task stack free=%lu bytes\n",
+           (unsigned long)uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t));
     bool upload_enabled = true;
+    xiaozhi_reset_ws_message_buffer(&incoming);
     while (!s_stop_requested) {
-        audio_service_capture_frame_t capture_frame = {0};
-        if (upload_enabled && audio_service_take_capture_frame(&capture_frame, 0U)) {
-            uint8_t opus_packet[AUDIO_SERVICE_OPUS_PACKET_MAX_SIZE] = {0};
-            size_t opus_length = 0U;
-            if (audio_service_encode_opus(&capture_frame, opus_packet, sizeof(opus_packet),
-                                          &opus_length) != ESP_OK ||
-                !xiaozhi_send_audio(websocket, protocol_version, opus_packet, opus_length)) {
+        if (upload_enabled && audio_service_take_opus_packet(outgoing_packet, 0U)) {
+            if (!xiaozhi_send_audio(websocket, protocol_version, outgoing_packet->data,
+                                    outgoing_packet->length,
+                                    serialized_packet,
+                                    XIAOZHI_BINARY_V2_HEADER_SIZE + AUDIO_SERVICE_OPUS_PACKET_MAX_SIZE)) {
                 printf("xiaozhi: microphone upload failed\n");
                 connected = false;
                 break;
             }
         }
 
-        const int received_length = esp_transport_read(websocket, (char *)received, sizeof(received) - 1U,
-                                                        XIAOZHI_WSS_READ_SLICE_MS);
+        const int received_length = esp_transport_read(
+            websocket, (char *)received + incoming.length,
+            XIAOZHI_WSS_RECEIVE_BUFFER_SIZE - incoming.length - 1U, XIAOZHI_WSS_READ_SLICE_MS);
         if (received_length < 0) {
             printf("xiaozhi: websocket session disconnected\n");
             connected = false;
@@ -714,17 +833,27 @@ static bool xiaozhi_open_websocket(const char *client_id, const char *device_id,
         if (received_length == 0) {
             continue;
         }
-        const int opcode = esp_transport_ws_get_read_opcode(websocket);
-        if (opcode == WS_TRANSPORT_OPCODES_TEXT) {
-            received[received_length] = '\0';
-            xiaozhi_handle_text_message((const char *)received, (size_t)received_length,
-                                        &upload_enabled);
-        } else if (opcode == WS_TRANSPORT_OPCODES_BINARY) {
+        bool message_complete = false;
+        if (!xiaozhi_append_ws_read(websocket, &incoming, (size_t)received_length,
+                                    &message_complete)) {
+            printf("xiaozhi: invalid incoming frame opcode=%d length=%d\n",
+                   esp_transport_ws_get_read_opcode(websocket), received_length);
+            xiaozhi_reset_ws_message_buffer(&incoming);
+            continue;
+        }
+        if (!message_complete) {
+            continue;
+        }
+        if (incoming.opcode == WS_TRANSPORT_OPCODES_TEXT) {
+            received[incoming.length] = '\0';
+            xiaozhi_handle_text_message((const char *)received, incoming.length, &upload_enabled);
+        } else if (incoming.opcode == WS_TRANSPORT_OPCODES_BINARY) {
             const uint8_t *opus_packet = NULL;
             size_t opus_length = 0U;
-            if (!xiaozhi_extract_audio_packet(received, (size_t)received_length, protocol_version,
+            if (!xiaozhi_extract_audio_packet(received, incoming.length, protocol_version,
                                               &opus_packet, &opus_length)) {
                 printf("xiaozhi: invalid incoming audio packet\n");
+                xiaozhi_reset_ws_message_buffer(&incoming);
                 continue;
             }
             if (audio_service_decode_and_play_opus(opus_packet, opus_length,
@@ -733,6 +862,7 @@ static bool xiaozhi_open_websocket(const char *client_id, const char *device_id,
                 printf("xiaozhi: speaker playback failed\n");
             }
         }
+        xiaozhi_reset_ws_message_buffer(&incoming);
     }
 
 cleanup:
@@ -741,6 +871,9 @@ cleanup:
     }
     (void)esp_transport_close(websocket);
     esp_transport_list_destroy(transport_list);
+    free(outgoing_packet);
+    free(serialized_packet);
+    free(received);
     return connected;
 }
 
@@ -768,6 +901,7 @@ static bool xiaozhi_wait_for_network(void)
 static void xiaozhi_session_task(void *argument)
 {
     (void)argument;
+    printf("xiaozhi: session task running on core %d\n", xPortGetCoreID());
 
     char client_id[XIAOZHI_UUID_LEN] = {0};
     char device_id[XIAOZHI_DEVICE_ID_LEN] = {0};
@@ -809,8 +943,10 @@ bool xiaozhi_client_start_session(void)
     }
 
     s_stop_requested = false;
-    if (xTaskCreate(xiaozhi_session_task, "xiaozhi_session", XIAOZHI_CLIENT_TASK_STACK_SIZE,
-                    NULL, XIAOZHI_CLIENT_TASK_PRIORITY, &s_session_task) != pdPASS) {
+    if (xTaskCreatePinnedToCore(xiaozhi_session_task, "xiaozhi_session",
+                                XIAOZHI_CLIENT_TASK_STACK_SIZE, NULL,
+                                XIAOZHI_CLIENT_TASK_PRIORITY, &s_session_task,
+                                XIAOZHI_CLIENT_TASK_CORE) != pdPASS) {
         s_session_task = NULL;
         printf("xiaozhi: session task creation failed\n");
         return false;

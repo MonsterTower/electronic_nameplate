@@ -8,6 +8,7 @@
 #include "freertos/task.h"
 
 #include "battery_monitor.h"
+#include "audio_service.h"
 #include "audio_test.h"
 #include "ai_service.h"
 #include "app_cache.h"
@@ -392,6 +393,11 @@ void app_main(void)
         printf("audio: hardware test %s\n", audio_test_err == ESP_OK ? "complete" : "finished with errors");
     }
 #endif
+    /* 在主任务的 Core 0 固定 I2S/GDMA 的中断归属，AI 编码任务将运行在 Core 1。 */
+    const esp_err_t audio_prepare_err = audio_service_prepare();
+    if (audio_prepare_err != ESP_OK) {
+        printf("audio: I2S/GDMA prepare failed: %s\n", esp_err_to_name(audio_prepare_err));
+    }
 
     app_model_t model;
     app_model_init(&model);
