@@ -62,7 +62,8 @@ static audio_service_capture_frame_t s_capture_discarded_frame;
 static audio_service_capture_frame_t s_codec_input_frame;
 static audio_service_opus_packet_t s_codec_output_packet;
 static int16_t s_decoded_samples[AUDIO_SERVICE_PLAYBACK_MAX_SAMPLES];
-static int32_t s_speaker_samples[AUDIO_SERVICE_DMA_FRAME_COUNT];
+/* NS4168 已由本地纯音验证为 16 位立体声时序，双槽写入相同单声道采样。 */
+static int16_t s_speaker_samples[AUDIO_SERVICE_DMA_FRAME_COUNT * 2U];
 
 static esp_err_t audio_service_open_opus_encoder(void);
 static esp_err_t audio_service_open_opus_decoder(uint32_t sample_rate_hz,
@@ -93,7 +94,10 @@ static uint32_t audio_service_integer_sqrt(uint64_t value)
 
 static int16_t audio_service_apply_speaker_gain(int16_t sample)
 {
-    const int32_t scaled = (int32_t)sample * AUDIO_SERVICE_SPEAKER_GAIN_PERCENT / 100;
+    /* 对齐官方音量曲线：40% 对应约 16% 振幅，避免语音峰值推动功放失真。 */
+    const int32_t gain_squared = AUDIO_SERVICE_SPEAKER_GAIN_PERCENT *
+                                 AUDIO_SERVICE_SPEAKER_GAIN_PERCENT;
+    const int32_t scaled = (int32_t)sample * gain_squared / 10000;
     return audio_service_saturate_pcm16(scaled);
 }
 
@@ -135,7 +139,7 @@ static esp_err_t audio_service_create_channels(void)
         return err;
     }
 
-    /* 官方 NoAudioCodecSimplex：I2S0 专用于 NS4168 输出，32 位单声道左声道。 */
+    /* NS4168 的硬件纯音测试已验证为 16 位立体声，左右槽写入同一单声道数据。 */
     i2s_chan_config_t speaker_channel_config =
         I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     speaker_channel_config.dma_desc_num = 6;
@@ -147,8 +151,8 @@ static esp_err_t audio_service_create_channels(void)
     }
     i2s_std_config_t speaker_config = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SERVICE_PLAYBACK_DEFAULT_SAMPLE_RATE_HZ),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
-                                                         I2S_SLOT_MODE_MONO),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
+                                                         I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = AUDIO_SPEAKER_BCLK_GPIO,
@@ -162,7 +166,6 @@ static esp_err_t audio_service_create_channels(void)
             },
         },
     };
-    speaker_config.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
     err = i2s_channel_init_std_mode(s_speaker_channel, &speaker_config);
     if (err != ESP_OK) {
         return err;
@@ -588,13 +591,14 @@ esp_err_t audio_service_play_pcm_mono(const int16_t *samples, size_t sample_coun
                                        remaining : AUDIO_SERVICE_DMA_FRAME_COUNT;
         for (size_t index = 0U; index < frame_count; ++index) {
             const int16_t scaled_sample = audio_service_apply_speaker_gain(samples[offset + index]);
-            s_speaker_samples[index] = (int32_t)scaled_sample * 65536;
+            s_speaker_samples[index * 2U] = scaled_sample;
+            s_speaker_samples[index * 2U + 1U] = scaled_sample;
         }
         size_t bytes_written = 0U;
         err = i2s_channel_write(s_speaker_channel, s_speaker_samples,
-                                frame_count * sizeof(int32_t), &bytes_written,
+                                frame_count * sizeof(int16_t) * 2U, &bytes_written,
                                 pdMS_TO_TICKS(500));
-        if (err != ESP_OK || bytes_written != frame_count * sizeof(int32_t)) {
+        if (err != ESP_OK || bytes_written != frame_count * sizeof(int16_t) * 2U) {
             return err == ESP_OK ? ESP_ERR_TIMEOUT : err;
         }
         offset += frame_count;
