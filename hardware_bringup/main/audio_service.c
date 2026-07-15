@@ -39,6 +39,7 @@ static QueueHandle_t s_opus_queue;
 static TaskHandle_t s_capture_task;
 static TaskHandle_t s_codec_task;
 static volatile bool s_session_active;
+static volatile bool s_capture_enabled;
 static bool s_initialized;
 static bool s_speaker_enabled;
 static uint32_t s_speaker_sample_rate_hz;
@@ -48,6 +49,11 @@ static uint32_t s_decoder_sample_rate_hz;
 static uint32_t s_decoder_frame_duration_ms;
 static int s_encoder_input_size;
 static int s_encoder_output_size;
+static uint32_t s_playback_packet_count;
+static uint32_t s_playback_sample_count;
+static int16_t s_playback_minimum;
+static int16_t s_playback_maximum;
+static uint64_t s_playback_sum_squares;
 
 /* 采集、编码和解码任务均复用静态缓冲，避免大数组占用任务栈。 */
 static int32_t s_capture_raw_samples[AUDIO_SERVICE_DMA_FRAME_COUNT];
@@ -71,6 +77,18 @@ static int16_t audio_service_saturate_pcm16(int32_t sample)
         return INT16_MIN;
     }
     return (int16_t)sample;
+}
+
+static uint32_t audio_service_integer_sqrt(uint64_t value)
+{
+    uint32_t root = 0U;
+    for (int bit = 31; bit >= 0; --bit) {
+        const uint64_t candidate = (uint64_t)root | (1ULL << bit);
+        if (candidate <= value / candidate) {
+            root = (uint32_t)candidate;
+        }
+    }
+    return root;
 }
 
 static int16_t audio_service_apply_speaker_gain(int16_t sample)
@@ -185,6 +203,12 @@ static void audio_service_capture_task(void *argument)
                                                pdMS_TO_TICKS(200));
         if (err != ESP_OK || bytes_read == 0U) {
             printf("audio: microphone read failed: %s\n", esp_err_to_name(err));
+            continue;
+        }
+
+        /* 手动结束一句话后仍保持 I2S 时钟运行，但丢弃后续采样。 */
+        if (!s_capture_enabled) {
+            frame_sample_count = 0U;
             continue;
         }
 
@@ -387,6 +411,7 @@ esp_err_t audio_service_start_session(void)
     }
 
     s_session_active = true;
+    s_capture_enabled = true;
     if (xTaskCreatePinnedToCore(audio_service_capture_task, "audio_capture",
                                 AUDIO_SERVICE_CAPTURE_TASK_STACK_SIZE, NULL,
                                 AUDIO_SERVICE_CAPTURE_TASK_PRIORITY, &s_capture_task,
@@ -402,9 +427,15 @@ esp_err_t audio_service_start_session(void)
     return ESP_OK;
 }
 
+void audio_service_pause_capture(void)
+{
+    s_capture_enabled = false;
+}
+
 void audio_service_stop_session(void)
 {
     s_session_active = false;
+    s_capture_enabled = false;
     vTaskDelay(pdMS_TO_TICKS(250));
     if (s_capture_task != NULL) {
         vTaskDelete(s_capture_task);
@@ -463,6 +494,28 @@ void audio_service_discard_capture_frames(void)
     }
 }
 
+void audio_service_reset_playback_diagnostics(void)
+{
+    s_playback_packet_count = 0U;
+    s_playback_sample_count = 0U;
+    s_playback_minimum = INT16_MAX;
+    s_playback_maximum = INT16_MIN;
+    s_playback_sum_squares = 0U;
+}
+
+void audio_service_print_playback_diagnostics(void)
+{
+    if (s_playback_sample_count == 0U) {
+        printf("audio: TTS PCM decoded no samples\n");
+        return;
+    }
+    const uint64_t mean_square = s_playback_sum_squares / s_playback_sample_count;
+    printf("audio: TTS PCM packets=%lu samples=%lu min=%d max=%d rms=%lu\n",
+           (unsigned long)s_playback_packet_count, (unsigned long)s_playback_sample_count,
+           s_playback_minimum, s_playback_maximum,
+           (unsigned long)audio_service_integer_sqrt(mean_square));
+}
+
 esp_err_t audio_service_decode_and_play_opus(const uint8_t *packet, size_t packet_length,
                                              uint32_t sample_rate_hz, uint32_t frame_duration_ms)
 {
@@ -490,8 +543,20 @@ esp_err_t audio_service_decode_and_play_opus(const uint8_t *packet, size_t packe
         output.decoded_size == 0U || output.decoded_size > sizeof(s_decoded_samples)) {
         return ESP_FAIL;
     }
-    return audio_service_play_pcm_mono(s_decoded_samples, output.decoded_size / sizeof(int16_t),
-                                       sample_rate_hz);
+    const size_t sample_count = output.decoded_size / sizeof(int16_t);
+    for (size_t index = 0U; index < sample_count; ++index) {
+        const int16_t sample = s_decoded_samples[index];
+        if (sample < s_playback_minimum) {
+            s_playback_minimum = sample;
+        }
+        if (sample > s_playback_maximum) {
+            s_playback_maximum = sample;
+        }
+        s_playback_sum_squares += (uint64_t)((int64_t)sample * sample);
+    }
+    ++s_playback_packet_count;
+    s_playback_sample_count += (uint32_t)sample_count;
+    return audio_service_play_pcm_mono(s_decoded_samples, sample_count, sample_rate_hz);
 }
 
 esp_err_t audio_service_play_pcm_mono(const int16_t *samples, size_t sample_count,

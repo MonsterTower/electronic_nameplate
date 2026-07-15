@@ -6,14 +6,7 @@
 
 void ai_service_start_session(void)
 {
-    if (xiaozhi_client_is_busy()) {
-        xiaozhi_client_stop_session();
-        printf("ai: official session stop requested\n");
-        return;
-    }
-    if (xiaozhi_client_start_session()) {
-        printf("ai: official session requested\n");
-    }
+    xiaozhi_client_handle_boot_button();
 }
 
 void ai_service_stop_session(void)

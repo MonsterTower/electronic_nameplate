@@ -26,10 +26,15 @@ typedef struct {
 /* 在 app_main 所在的 Core 0 提前创建 I2S/GDMA，固定 RX 中断的归属核心。 */
 esp_err_t audio_service_prepare(void);
 esp_err_t audio_service_start_session(void);
+/* 停止本轮麦克风采集，保留已进入编码队列的末尾音频供上层发送。 */
+void audio_service_pause_capture(void);
 void audio_service_stop_session(void);
 bool audio_service_is_session_active(void);
 bool audio_service_take_opus_packet(audio_service_opus_packet_t *packet, TickType_t timeout);
 void audio_service_discard_capture_frames(void);
+/* 记录服务端 TTS 的解码 PCM 概况，供串口诊断下行音频。 */
+void audio_service_reset_playback_diagnostics(void);
+void audio_service_print_playback_diagnostics(void);
 esp_err_t audio_service_decode_and_play_opus(const uint8_t *packet, size_t packet_length,
                                              uint32_t sample_rate_hz, uint32_t frame_duration_ms);
 esp_err_t audio_service_play_pcm_mono(const int16_t *samples, size_t sample_count,
