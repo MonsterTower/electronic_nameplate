@@ -1,2 +1,5 @@
+## ESP Component Manager manifest.
+## 仅引入 Opus 编解码所需的乐鑫音频组件，不包含完整语音识别或唤醒词套件。
 dependencies:
   espressif/cjson: "^1.7.19~2"
+  espressif/esp_audio_codec: "~2.4.1"

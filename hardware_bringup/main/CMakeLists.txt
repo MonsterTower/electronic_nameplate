@@ -6,5 +6,6 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES esp_driver_gpio esp_driver_i2s esp_adc esp_driver_spi u8g2
              esp_wifi esp_netif esp_event lwip nvs_flash
-             esp_http_client esp-tls mbedtls tcp_transport esp_app_format wpa_supplicant cjson esp_pm esp_timer
+             esp_http_client esp-tls mbedtls tcp_transport esp_app_format wpa_supplicant espressif__cjson esp_pm esp_timer
+             espressif__esp_audio_codec
 )
