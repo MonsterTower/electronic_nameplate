@@ -277,6 +277,12 @@ static void page_draw_ai(const app_model_t *model)
 {
     page_begin(model, "小智 AI");
     page_draw_fitted_centered(168, "小智 AI", DISPLAY_COLOR_BLACK, 4);
+    if (!model->wifi_connected) {
+        /* AI 会话无法离线工作，失败时不显示会造成误导的 BOOT 提示。 */
+        page_draw_fitted_centered(112, "网络连接失败", DISPLAY_COLOR_RED, 2);
+        page_draw_fitted_centered(72, "请检查 Wi-Fi", DISPLAY_COLOR_BLACK, 2);
+        return;
+    }
     page_draw_fitted_centered(112, "语音对话", DISPLAY_COLOR_RED, 2);
     page_draw_fitted_centered(72, "按 BOOT 开始", DISPLAY_COLOR_BLACK, 2);
 }

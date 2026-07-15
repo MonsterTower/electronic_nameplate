@@ -330,6 +330,34 @@ static bool network_update_is_running(void)
     return running;
 }
 
+static bool network_is_connected(void)
+{
+    network_service_data_t network_data = {0};
+    network_service_get_snapshot(&network_data);
+    return network_data.wifi_connected;
+}
+
+static void render_page_after_switch(app_model_t *model)
+{
+    const bool calendar_waiting = model->page == APP_PAGE_CALENDAR && network_update_is_running();
+    if (model->page == APP_PAGE_AI && !network_is_connected()) {
+        /* AI 页面需要联网；若此前网络任务已结束，则重新发起一次有限时的连接周期。 */
+        if (!network_update_is_running() && !network_update_start(model)) {
+            model->wifi_connected = false;
+            snprintf(model->wifi_text, sizeof(model->wifi_text), "%s", "未连接");
+            render_current_page(model);
+            return;
+        }
+        display_pages_render_network_waiting(model);
+        return;
+    }
+    if (calendar_waiting) {
+        display_pages_render_network_waiting(model);
+        return;
+    }
+    render_current_page(model);
+}
+
 static bool network_update_take_result(network_update_job_t *result)
 {
     if (result == NULL || s_network_job_mutex == NULL) {
@@ -388,7 +416,8 @@ void app_main(void)
         } else {
             network_started = network_update_start(&model);
         }
-        if (network_started && (cold_boot || model.page == APP_PAGE_CALENDAR)) {
+        if (network_started &&
+            (cold_boot || model.page == APP_PAGE_CALENDAR || model.page == APP_PAGE_AI)) {
             /* Wi-Fi 认证与墨水屏全刷并行进行，避免用户面对空白等待。 */
             display_pages_render_network_waiting(&model);
         } else if (cold_boot) {
@@ -402,7 +431,7 @@ void app_main(void)
         enter_sleep(POWER_MANAGER_LOW_BATTERY_SLEEP_SECONDS,
                     model.battery_critical ? "critical battery" : "low battery");
     }
-    if (wake_reason == POWER_WAKE_TIMER && !network_started) {
+    if (wake_reason == POWER_WAKE_TIMER && !network_started && model.page != APP_PAGE_AI) {
         enter_sleep(network_updated ? POWER_MANAGER_NORMAL_SLEEP_SECONDS :
                                      POWER_MANAGER_NETWORK_RETRY_SLEEP_SECONDS,
                     network_updated ? "periodic update complete" : "network retry");
@@ -442,10 +471,15 @@ void app_main(void)
                 (void)app_cache_save(&model);
             }
 
-            if (cold_boot || model.page == APP_PAGE_CALENDAR) {
+            if (model.page == APP_PAGE_AI && !network_result.network_data.wifi_connected) {
+                /* AI 页面不能沿用缓存中的联网状态，否则会显示不可用的 BOOT 提示。 */
+                update_model_wifi_from_network(&model, &network_result.network_data);
+            }
+
+            if (cold_boot || model.page == APP_PAGE_CALENDAR || model.page == APP_PAGE_AI) {
                 render_current_page(&model);
             }
-            if (wake_reason == POWER_WAKE_TIMER) {
+            if (wake_reason == POWER_WAKE_TIMER && model.page != APP_PAGE_AI) {
                 enter_sleep(network_updated ? POWER_MANAGER_NORMAL_SLEEP_SECONDS :
                                              POWER_MANAGER_NETWORK_RETRY_SLEEP_SECONDS,
                             network_updated ? "periodic update complete" : "network retry");
@@ -457,21 +491,13 @@ void app_main(void)
             app_model_previous_page(&model);
             (void)app_cache_save(&model);
             printf("page: switched to %d\n", (int)model.page);
-            if (network_update_is_running() && model.page == APP_PAGE_CALENDAR) {
-                display_pages_render_network_waiting(&model);
-            } else {
-                render_current_page(&model);
-            }
+            render_page_after_switch(&model);
             power_manager_note_activity();
         } else if (event == BUTTON_EVENT_PLUS) {
             app_model_next_page(&model);
             (void)app_cache_save(&model);
             printf("page: switched to %d\n", (int)model.page);
-            if (network_update_is_running() && model.page == APP_PAGE_CALENDAR) {
-                display_pages_render_network_waiting(&model);
-            } else {
-                render_current_page(&model);
-            }
+            render_page_after_switch(&model);
             power_manager_note_activity();
         } else if (event == BUTTON_EVENT_BOOT) {
             if (model.page == APP_PAGE_AI) {
@@ -488,7 +514,8 @@ void app_main(void)
             enter_sleep(POWER_MANAGER_LOW_BATTERY_SLEEP_SECONDS,
                         model.battery_critical ? "critical battery" : "low battery");
         }
-        if (!network_update_is_running() && power_manager_interaction_expired()) {
+        if (model.page != APP_PAGE_AI && !network_update_is_running() &&
+            power_manager_interaction_expired()) {
             enter_sleep(network_updated ? POWER_MANAGER_NORMAL_SLEEP_SECONDS :
                                          POWER_MANAGER_NETWORK_RETRY_SLEEP_SECONDS,
                         network_updated ? "interaction timeout" : "network retry");
