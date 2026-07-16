@@ -15,6 +15,12 @@
 #define PAGE_TITLE_Y 258
 #define PAGE_TITLE_LINE_Y 242
 #define PAGE_STATUS_LINE_Y 42
+#define PAGE_CALENDAR_COLUMN_COUNT 7
+#define PAGE_CALENDAR_ROW_COUNT 6
+#define PAGE_CALENDAR_COLUMN_WIDTH (PAGE_CONTENT_WIDTH / PAGE_CALENDAR_COLUMN_COUNT)
+#define PAGE_CALENDAR_WEEKDAY_Y 192
+#define PAGE_CALENDAR_FIRST_ROW_Y 166
+#define PAGE_CALENDAR_ROW_HEIGHT 24
 
 static int page_center_x(const char *text, int scale)
 {
@@ -75,20 +81,106 @@ static void page_draw_nameplate(const app_model_t *model)
     page_draw_fitted_centered(65, model->topic, DISPLAY_COLOR_BLACK, 3);
 }
 
+static bool page_calendar_is_leap_year(int year)
+{
+    return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+}
+
+static int page_calendar_days_in_month(int year, int month)
+{
+    static const uint8_t days[] = {31U, 28U, 31U, 30U, 31U, 30U,
+                                   31U, 31U, 30U, 31U, 30U, 31U};
+    if (month < 1 || month > 12) {
+        return 0;
+    }
+    return month == 2 && page_calendar_is_leap_year(year) ? 29 : days[month - 1];
+}
+
+/* 返回星期日为 0、星期六为 6，避免页面层依赖联网模块的时间对象。 */
+static int page_calendar_weekday(int year, int month, int day)
+{
+    static const int month_offsets[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+    if (month < 3) {
+        --year;
+    }
+    return (year + year / 4 - year / 100 + year / 400 + month_offsets[month - 1] + day) % 7;
+}
+
+static bool page_calendar_parse_date(const char *text, int *year, int *month, int *day)
+{
+    if (text == NULL || year == NULL || month == NULL || day == NULL ||
+        sscanf(text, "%d-%d-%d", year, month, day) != 3) {
+        return false;
+    }
+    const int days = page_calendar_days_in_month(*year, *month);
+    return *year >= 2000 && *year <= 2099 && days > 0 && *day >= 1 && *day <= days;
+}
+
 static void page_draw_calendar(const app_model_t *model)
 {
-    page_begin(model, "电子日历");
-    if (!model->time_synced) {
+    static const char *const weekday_texts[] = {"日", "一", "二", "三", "四", "五", "六"};
+
+    int year = 0;
+    int month = 0;
+    int today = 0;
+    if (!model->time_synced || !page_calendar_parse_date(model->date, &year, &month, &today)) {
+        page_begin(model, "电子日历");
         page_draw_fitted_centered(158, "时间未校准", DISPLAY_COLOR_BLACK, 3);
-        page_draw_fitted_centered(104, model->weather, DISPLAY_COLOR_BLACK, 2);
+        page_draw_fitted_centered(104, model->weather, DISPLAY_COLOR_BLACK, 1);
         return;
     }
 
-    page_draw_fitted_centered(190, model->date, DISPLAY_COLOR_BLACK, 3);
-    page_draw_fitted_centered(150, model->weekday, DISPLAY_COLOR_RED, 3);
-    page_draw_fitted_centered(112, model->time, DISPLAY_COLOR_BLACK, 2);
-    page_draw_fitted_centered(78, model->weather, DISPLAY_COLOR_BLACK, 2);
-    page_draw_fitted_centered(52, model->calendar_event, DISPLAY_COLOR_BLACK, 1);
+    char month_text[24];
+    snprintf(month_text, sizeof(month_text), "%d年%d月", year, month);
+    page_begin(model, month_text);
+    const int weather_width = display_surface_measure_utf8(model->weather, 1);
+    const int weather_x = PAGE_CONTENT_RIGHT - weather_width;
+    display_surface_draw_utf8(weather_x > 166 ? weather_x : 166, 218, model->weather,
+                              DISPLAY_COLOR_BLACK, 1);
+
+    /* 星期栏借用黑白红三色，周末单独标红以增强月视图的扫读性。 */
+    display_surface_fill_rect(PAGE_CONTENT_LEFT, PAGE_CALENDAR_WEEKDAY_Y,
+                              PAGE_CONTENT_WIDTH, 20, DISPLAY_COLOR_BLACK);
+    display_surface_fill_rect(PAGE_CONTENT_LEFT, PAGE_CALENDAR_WEEKDAY_Y,
+                              PAGE_CALENDAR_COLUMN_WIDTH, 20, DISPLAY_COLOR_RED);
+    display_surface_fill_rect(PAGE_CONTENT_LEFT + PAGE_CALENDAR_COLUMN_WIDTH * 6,
+                              PAGE_CALENDAR_WEEKDAY_Y, PAGE_CALENDAR_COLUMN_WIDTH, 20,
+                              DISPLAY_COLOR_RED);
+    for (int weekday = 0; weekday < PAGE_CALENDAR_COLUMN_COUNT; ++weekday) {
+        const int text_width = display_surface_measure_utf8(weekday_texts[weekday], 1);
+        const int x = PAGE_CONTENT_LEFT + weekday * PAGE_CALENDAR_COLUMN_WIDTH +
+                      (PAGE_CALENDAR_COLUMN_WIDTH - text_width) / 2;
+        display_surface_draw_utf8(x, PAGE_CALENDAR_WEEKDAY_Y + 2, weekday_texts[weekday],
+                                  DISPLAY_COLOR_WHITE, 1);
+    }
+
+    const int first_weekday = page_calendar_weekday(year, month, 1);
+    const int days_in_month = page_calendar_days_in_month(year, month);
+    for (int day = 1; day <= days_in_month; ++day) {
+        const int cell_index = first_weekday + day - 1;
+        const int row = cell_index / PAGE_CALENDAR_COLUMN_COUNT;
+        const int weekday = cell_index % PAGE_CALENDAR_COLUMN_COUNT;
+        if (row >= PAGE_CALENDAR_ROW_COUNT) {
+            break;
+        }
+
+        char day_text[12];
+        snprintf(day_text, sizeof(day_text), "%d", day);
+        const int text_width = display_surface_measure_utf8(day_text, 2);
+        const int x = PAGE_CONTENT_LEFT + weekday * PAGE_CALENDAR_COLUMN_WIDTH +
+                      (PAGE_CALENDAR_COLUMN_WIDTH - text_width) / 2;
+        const int y = PAGE_CALENDAR_FIRST_ROW_Y - row * PAGE_CALENDAR_ROW_HEIGHT;
+        const bool is_today = day == today;
+        if (is_today) {
+            display_surface_fill_rect(PAGE_CONTENT_LEFT + weekday * PAGE_CALENDAR_COLUMN_WIDTH + 3,
+                                      y - 3, PAGE_CALENDAR_COLUMN_WIDTH - 6, 25,
+                                      DISPLAY_COLOR_RED);
+        }
+        const display_color_t color = is_today ? DISPLAY_COLOR_WHITE :
+                                      (weekday == 0 || weekday == 6 ? DISPLAY_COLOR_RED :
+                                                                       DISPLAY_COLOR_BLACK);
+        display_surface_draw_utf8(x, y, day_text, color, 2);
+    }
 }
 
 static void page_copy_utf8_prefix(char *destination, size_t destination_size,
