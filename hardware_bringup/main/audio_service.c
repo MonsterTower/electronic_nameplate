@@ -31,6 +31,10 @@
 #define AUDIO_SERVICE_PLAYBACK_MAX_FRAME_MS 120U
 #define AUDIO_SERVICE_PLAYBACK_MAX_SAMPLES \
     (AUDIO_SERVICE_PLAYBACK_MAX_SAMPLE_RATE_HZ * AUDIO_SERVICE_PLAYBACK_MAX_FRAME_MS / 1000U)
+#define AUDIO_SERVICE_SLEEP_TONE_SAMPLE_RATE_HZ 16000U
+#define AUDIO_SERVICE_SLEEP_TONE_DURATION_MS 500U
+#define AUDIO_SERVICE_SLEEP_TONE_START_HZ 1800U
+#define AUDIO_SERVICE_SLEEP_TONE_END_HZ 600U
 
 static i2s_chan_handle_t s_microphone_channel;
 static i2s_chan_handle_t s_speaker_channel;
@@ -64,6 +68,13 @@ static audio_service_opus_packet_t s_codec_output_packet;
 static int16_t s_decoded_samples[AUDIO_SERVICE_PLAYBACK_MAX_SAMPLES];
 /* NS4168 已由本地纯音验证为 16 位立体声时序，双槽写入相同单声道采样。 */
 static int16_t s_speaker_samples[AUDIO_SERVICE_DMA_FRAME_COUNT * 2U];
+/* 32 点正弦表用于提示音扫频，避免引入浮点运算和额外数学库。 */
+static const int16_t s_sleep_tone_sine[] = {
+    0, 2341, 4592, 6667, 8485, 9978, 11086, 11769,
+    12000, 11769, 11086, 9978, 8485, 6667, 4592, 2341,
+    0, -2341, -4592, -6667, -8485, -9978, -11086, -11769,
+    -12000, -11769, -11086, -9978, -8485, -6667, -4592, -2341,
+};
 
 static esp_err_t audio_service_open_opus_encoder(void);
 static esp_err_t audio_service_open_opus_decoder(uint32_t sample_rate_hz,
@@ -451,8 +462,49 @@ void audio_service_finish_playback(void)
     s_decoder_sample_rate_hz = 0U;
     s_decoder_frame_duration_ms = 0U;
     if (released) {
-        printf("audio: TTS playback resources released\n");
+        printf("audio: playback resources released\n");
     }
+}
+
+esp_err_t audio_service_play_sleep_tone(void)
+{
+    if (s_session_active) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const uint32_t total_samples =
+        AUDIO_SERVICE_SLEEP_TONE_SAMPLE_RATE_HZ * AUDIO_SERVICE_SLEEP_TONE_DURATION_MS / 1000U;
+    int16_t samples[AUDIO_SERVICE_DMA_FRAME_COUNT];
+    uint32_t sent_samples = 0U;
+    uint32_t phase = 0U;
+    esp_err_t err = ESP_OK;
+
+    printf("audio: sleep tone start, %u->%u Hz, %u ms\n", AUDIO_SERVICE_SLEEP_TONE_START_HZ,
+           AUDIO_SERVICE_SLEEP_TONE_END_HZ, AUDIO_SERVICE_SLEEP_TONE_DURATION_MS);
+    while (sent_samples < total_samples) {
+        const size_t sample_count = total_samples - sent_samples < AUDIO_SERVICE_DMA_FRAME_COUNT ?
+                                        total_samples - sent_samples : AUDIO_SERVICE_DMA_FRAME_COUNT;
+        for (size_t index = 0U; index < sample_count; ++index) {
+            const uint32_t elapsed_samples = sent_samples + (uint32_t)index;
+            const uint32_t frequency_hz = AUDIO_SERVICE_SLEEP_TONE_START_HZ -
+                                          (AUDIO_SERVICE_SLEEP_TONE_START_HZ -
+                                           AUDIO_SERVICE_SLEEP_TONE_END_HZ) *
+                                              elapsed_samples / total_samples;
+            phase += (uint32_t)(((uint64_t)frequency_hz << 32U) /
+                                AUDIO_SERVICE_SLEEP_TONE_SAMPLE_RATE_HZ);
+            samples[index] = s_sleep_tone_sine[phase >> 27U];
+        }
+        err = audio_service_play_pcm_mono(samples, sample_count,
+                                          AUDIO_SERVICE_SLEEP_TONE_SAMPLE_RATE_HZ);
+        if (err != ESP_OK) {
+            break;
+        }
+        sent_samples += (uint32_t)sample_count;
+    }
+
+    audio_service_finish_playback();
+    printf("audio: sleep tone %s\n", err == ESP_OK ? "complete" : "failed");
+    return err;
 }
 
 void audio_service_stop_session(void)

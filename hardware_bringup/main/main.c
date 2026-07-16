@@ -179,6 +179,10 @@ static void button_led_turn_off(void)
 
 static void enter_sleep(uint32_t sleep_seconds, const char *reason)
 {
+    const esp_err_t tone_err = audio_service_play_sleep_tone();
+    if (tone_err != ESP_OK) {
+        printf("audio: sleep tone skipped: %s\n", esp_err_to_name(tone_err));
+    }
     display_pages_sleep();
     ai_service_stop_session();
     network_service_shutdown();
