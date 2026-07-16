@@ -77,8 +77,8 @@ static void page_draw_nameplate(const app_model_t *model)
     page_begin(model, "电子桌牌");
     page_draw_fitted_centered(158, model->name, DISPLAY_COLOR_BLACK, 5);
     display_surface_draw_line(78, 145, DISPLAY_SURFACE_WIDTH - 79, 145, DISPLAY_COLOR_RED);
-    page_draw_fitted_centered(106, model->organization, DISPLAY_COLOR_BLACK, 3);
-    page_draw_fitted_centered(65, model->topic, DISPLAY_COLOR_BLACK, 3);
+    page_draw_fitted_centered(90, model->organization, DISPLAY_COLOR_BLACK, 3);
+    page_draw_fitted_centered(50, model->topic, DISPLAY_COLOR_BLACK, 3);
 }
 
 static bool page_calendar_is_leap_year(int year)

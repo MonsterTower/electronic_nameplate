@@ -35,6 +35,7 @@
 
 #define BUTTON_SCAN_INTERVAL_MS 10U
 #define BUTTON_DEBOUNCE_MS 30U
+#define BUTTON_BOOT_LONG_PRESS_MS 3000U
 #define NETWORK_UPDATE_TASK_STACK_SIZE 16384U
 #define NETWORK_UPDATE_TASK_PRIORITY (tskIDLE_PRIORITY + 1U)
 
@@ -45,11 +46,13 @@ typedef struct {
     int raw_level;
     int stable_level;
     TickType_t last_raw_change_tick;
+    TickType_t pressed_tick;
 } button_led_pair_t;
 
 typedef enum {
     BUTTON_EVENT_NONE = 0,
     BUTTON_EVENT_BOOT,
+    BUTTON_EVENT_BOOT_LONG,
     BUTTON_EVENT_MINUS,
     BUTTON_EVENT_PLUS,
 } button_event_t;
@@ -115,6 +118,7 @@ static void button_led_init(void)
         pair->raw_level = gpio_get_level(pair->button_gpio);
         pair->stable_level = pair->raw_level;
         pair->last_raw_change_tick = now;
+        pair->pressed_tick = button_is_pressed(pair->stable_level) ? now : 0U;
         button_led_apply(pair);
     }
 }
@@ -138,12 +142,18 @@ static button_event_t button_led_update(void)
             button_led_apply(pair);
             printf("button: %s %s\n", pair->name,
                    button_is_pressed(pair->stable_level) ? "pressed" : "released");
-            if (!button_is_pressed(pair->stable_level)) {
-                continue;
-            }
 
             if (pair->button_gpio == BUTTON_BOOT_GPIO) {
-                event = BUTTON_EVENT_BOOT;
+                if (button_is_pressed(pair->stable_level)) {
+                    pair->pressed_tick = now;
+                } else {
+                    const TickType_t pressed_ticks = now - pair->pressed_tick;
+                    pair->pressed_tick = 0U;
+                    event = pressed_ticks >= pdMS_TO_TICKS(BUTTON_BOOT_LONG_PRESS_MS) ?
+                                BUTTON_EVENT_BOOT_LONG : BUTTON_EVENT_BOOT;
+                }
+            } else if (!button_is_pressed(pair->stable_level)) {
+                continue;
             } else if (pair->button_gpio == BUTTON_MINUS_GPIO) {
                 event = BUTTON_EVENT_MINUS;
             } else if (pair->button_gpio == BUTTON_PLUS_GPIO) {
@@ -498,22 +508,41 @@ void app_main(void)
         }
 
         if (event == BUTTON_EVENT_MINUS) {
-            app_model_previous_page(&model);
-            (void)app_cache_save(&model);
-            printf("page: switched to %d\n", (int)model.page);
-            render_page_after_switch(&model);
+            if (model.page == APP_PAGE_AI) {
+                audio_service_adjust_volume(false);
+            } else {
+                app_model_previous_page(&model);
+                (void)app_cache_save(&model);
+                printf("page: switched to %d\n", (int)model.page);
+                render_page_after_switch(&model);
+            }
             power_manager_note_activity();
         } else if (event == BUTTON_EVENT_PLUS) {
-            app_model_next_page(&model);
-            (void)app_cache_save(&model);
-            printf("page: switched to %d\n", (int)model.page);
-            render_page_after_switch(&model);
+            if (model.page == APP_PAGE_AI) {
+                audio_service_adjust_volume(true);
+            } else {
+                app_model_next_page(&model);
+                (void)app_cache_save(&model);
+                printf("page: switched to %d\n", (int)model.page);
+                render_page_after_switch(&model);
+            }
             power_manager_note_activity();
         } else if (event == BUTTON_EVENT_BOOT) {
             if (model.page == APP_PAGE_AI) {
                 ai_service_start_session();
             } else {
                 printf("power: interaction retained by BOOT\n");
+            }
+            power_manager_note_activity();
+        } else if (event == BUTTON_EVENT_BOOT_LONG) {
+            if (model.page == APP_PAGE_AI) {
+                ai_service_stop_session();
+                model.page = APP_PAGE_NAMEPLATE;
+                (void)app_cache_save(&model);
+                printf("ai: long BOOT press, returned to page 0\n");
+                render_current_page(&model);
+            } else {
+                printf("power: long BOOT press ignored outside AI page\n");
             }
             power_manager_note_activity();
         }

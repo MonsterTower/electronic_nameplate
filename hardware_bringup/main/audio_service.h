@@ -33,6 +33,8 @@ void audio_service_stop_session(void);
 void audio_service_finish_playback(void);
 /* 休眠前播放 0.5 秒由高到低的提示音。 */
 esp_err_t audio_service_play_sleep_tone(void);
+/* AI 页面通过 BUT+ / BUT- 调整播放增益，不影响麦克风采集。 */
+void audio_service_adjust_volume(bool increase);
 bool audio_service_is_session_active(void);
 bool audio_service_take_opus_packet(audio_service_opus_packet_t *packet, TickType_t timeout);
 void audio_service_discard_capture_frames(void);

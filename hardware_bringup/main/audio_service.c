@@ -25,7 +25,10 @@
 #define AUDIO_SERVICE_CAPTURE_TASK_CORE 0
 #define AUDIO_SERVICE_CODEC_TASK_STACK_SIZE (2048U * 12U)
 #define AUDIO_SERVICE_CODEC_TASK_PRIORITY 2U
-#define AUDIO_SERVICE_SPEAKER_GAIN_PERCENT 60U
+#define AUDIO_SERVICE_SPEAKER_GAIN_DEFAULT_PERCENT 60U
+#define AUDIO_SERVICE_SPEAKER_GAIN_MIN_PERCENT 10U
+#define AUDIO_SERVICE_SPEAKER_GAIN_MAX_PERCENT 100U
+#define AUDIO_SERVICE_SPEAKER_GAIN_STEP_PERCENT 10U
 #define AUDIO_SERVICE_PLAYBACK_DEFAULT_SAMPLE_RATE_HZ 24000U
 #define AUDIO_SERVICE_PLAYBACK_MAX_SAMPLE_RATE_HZ 24000U
 #define AUDIO_SERVICE_PLAYBACK_MAX_FRAME_MS 120U
@@ -47,6 +50,7 @@ static volatile bool s_capture_enabled;
 static bool s_initialized;
 static bool s_speaker_enabled;
 static uint32_t s_speaker_sample_rate_hz;
+static volatile uint8_t s_speaker_gain_percent = AUDIO_SERVICE_SPEAKER_GAIN_DEFAULT_PERCENT;
 static void *s_opus_encoder;
 static void *s_opus_decoder;
 static uint32_t s_decoder_sample_rate_hz;
@@ -106,10 +110,29 @@ static uint32_t audio_service_integer_sqrt(uint64_t value)
 static int16_t audio_service_apply_speaker_gain(int16_t sample)
 {
     /* 对齐官方音量曲线：40% 对应约 16% 振幅，避免语音峰值推动功放失真。 */
-    const int32_t gain_squared = AUDIO_SERVICE_SPEAKER_GAIN_PERCENT *
-                                 AUDIO_SERVICE_SPEAKER_GAIN_PERCENT;
+    const uint32_t gain_percent = s_speaker_gain_percent;
+    const int32_t gain_squared = (int32_t)gain_percent * (int32_t)gain_percent;
     const int32_t scaled = (int32_t)sample * gain_squared / 10000;
     return audio_service_saturate_pcm16(scaled);
+}
+
+void audio_service_adjust_volume(bool increase)
+{
+    uint8_t gain_percent = s_speaker_gain_percent;
+    if (increase) {
+        gain_percent = gain_percent >= AUDIO_SERVICE_SPEAKER_GAIN_MAX_PERCENT -
+                                       AUDIO_SERVICE_SPEAKER_GAIN_STEP_PERCENT ?
+                           AUDIO_SERVICE_SPEAKER_GAIN_MAX_PERCENT :
+                           gain_percent + AUDIO_SERVICE_SPEAKER_GAIN_STEP_PERCENT;
+    } else {
+        gain_percent = gain_percent <= AUDIO_SERVICE_SPEAKER_GAIN_MIN_PERCENT +
+                                       AUDIO_SERVICE_SPEAKER_GAIN_STEP_PERCENT ?
+                           AUDIO_SERVICE_SPEAKER_GAIN_MIN_PERCENT :
+                           gain_percent - AUDIO_SERVICE_SPEAKER_GAIN_STEP_PERCENT;
+    }
+
+    s_speaker_gain_percent = gain_percent;
+    printf("audio: volume=%u%%\n", gain_percent);
 }
 
 static esp_err_t audio_service_create_channels(void)
